@@ -1,0 +1,10 @@
+<launch>
+    <!-- Load your custom parameters -->
+
+    <include file="$(find mavros)/launch/px4.launch" >
+        <arg name="fcu_url" value="/dev/ttyUSB0:921600"/>
+    </include>
+
+    <!-- Launch your controller node -->
+    <node name="mavros_data_reader" pkg="lis_nv" type="mavros.py" output="screen" />
+</launch>
