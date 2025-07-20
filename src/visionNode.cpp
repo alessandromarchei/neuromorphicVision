@@ -269,7 +269,8 @@ void VisionNode::initializeSlicer() {
             }
 
 
-
+            //eventually apply the slicing window if enabled
+            applyAdaptiveSlicing();
         }
 
         else
@@ -771,7 +772,6 @@ void VisionNode::rcCallback(const mavros_msgs::RCIn::ConstPtr &msg) {
             ROS_INFO("CAM OFF\n");
 
 
-            sendStatusText(files_end, 6);
         }
 
         wasReadEventsOn = false;
@@ -973,4 +973,100 @@ void VisionNode::saveEvents(const dv::EventStore &events, const dv::cvector<dv::
     } else {
         // do nothing
     }
+}
+
+
+
+
+void VisionNodePlayback::applyAdaptiveSlicing()
+{   
+    //only apply if it implemented
+    if(adaptiveSlicingEnable)
+    {   
+        bool updateTimingWindow = false;
+        if (!filteredFlowVectors.empty()) {
+            // Calculate the average length of the optical flow vectors
+
+            double magnitude = 0.0;
+            for (const auto& vec : filteredFlowVectors) {
+                // in pixels
+                magnitude += std::sqrt(vec.deltaX * vec.deltaX + vec.deltaY * vec.deltaY);
+            }
+            magnitude /= static_cast<double>(filteredFlowVectors.size());
+
+            // Calculate PID error terms
+            //if error is positive, it means the timing window is too short, and we need to increase it
+            //if error is negative, it means the timing window is too long, and we need to decrease it, so the optical flow vectors will be shorter
+            double error = OFPixelSetpoint - magnitude;    
+            integralError += error;
+            double derivative = error - previousError;
+
+            // PID output
+            PIDoutput = P_adaptiveSlicing * error + I_adaptiveSlicing * integralError + D_adaptiveSlicing * derivative;
+
+
+            if (std::abs(PIDoutput) > thresholdPIDEvents && PIDoutput > 0 && adaptiveTimeWindow < maxTimingWindow)
+            {
+                adaptiveTimeWindow += adaptiveTimingWindowStep;
+                adaptiveTimeWindow = std::min(adaptiveTimeWindow, maxTimingWindow); // Clamp to max
+                integralError = 0.0;
+                PIDoutput = 0.0;
+                updateTimingWindow = true;
+                //assign new value to the slicer
+                
+            }
+            else if(std::abs(PIDoutput) > thresholdPIDEvents && PIDoutput < 0 && adaptiveTimeWindow > minTimingWindow)
+            {
+                //ROS_INFO("decrease");
+                adaptiveTimeWindow -= adaptiveTimingWindowStep;
+                adaptiveTimeWindow = std::max(adaptiveTimeWindow, minTimingWindow); // Clamp to min
+                integralError = 0.0;
+                PIDoutput = 0.0;
+                updateTimingWindow = true;
+
+            }
+            else if(std::abs(PIDoutput) > thresholdPIDEvents)
+            {
+                //reached the saturation values, so instead of accumulating the error, reset it
+                integralError = 0.0;
+                PIDoutput = 0.0;
+
+                updateTimingWindow = false;
+            }
+
+            //ROS_INFO("updateTimingWindow = %d", updateTimingWindow);
+            if(updateTimingWindow)
+            {
+                // Update the slicer timing window
+                //ROS_INFO("updating slicer");
+                if(slicer->hasJob(0))
+                {
+                    slicer->modifyTimeInterval(0, std::chrono::milliseconds(static_cast<int>(adaptiveTimeWindow)));
+                    //std::cout << "Slicer job 0 timing window updated to " << adaptiveTimeWindow << " us" << std::endl;
+                }
+                else if(slicer->hasJob(1))
+                {
+                    slicer->modifyTimeInterval(1, std::chrono::milliseconds(static_cast<int>(adaptiveTimeWindow)));
+                    //std::cout << "Slicer job 1 timing window updated to " << adaptiveTimeWindow << " us" << std::endl;
+                }
+                else
+                {
+                    //std::cout << "No job found to update the timing window" << std::endl;
+                
+                    // Recalculate FPS
+                    
+                }
+                fps = 1e3 / static_cast<float>(adaptiveTimeWindow);
+            }
+           
+
+            // Update the previous error
+            previousError = error;
+
+            
+        }
+
+    }
+
+    return;
 }

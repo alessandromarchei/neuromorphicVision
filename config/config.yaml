@@ -14,7 +14,7 @@ ACCUMULATOR:
   ignorePolarity: false
 
 SLICER:
-  fps: 50
+  fps: 50 #intial value: slicing at 20 ms
 
 
 CAMERA:
@@ -76,3 +76,18 @@ lidarMax : 0.0    #in meters. if lidar the lidar detects less than this, publish
 publishAltitudeFrequency: 50  #in Hz. IT MUST BE BETWEEN 30 and 50 Hz
 
 velocitySource : 0 # 0: airspped, 1: groundspeed
+
+FASTLKParallel : true
+
+
+#ADAPTIVE SLICING : 
+adaptiveSlicing:
+  enable: true
+  P: 0.5
+  I: 0.05
+  D: 0.000
+  maxTimingWindow: 25  #ms : min FPS = 40
+  minTimingWindow: 15   #ms : max FPS = 75
+  adaptiveTimingWindowStep: 1   #ms
+  thresholdPIDEvents: 10
+  OFPixelSetpoint: 7  #

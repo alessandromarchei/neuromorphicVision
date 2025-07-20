@@ -63,9 +63,7 @@ void VisionNodeFrames::run() {
     ROS_INFO("spinner started\n");
 
     // Create rate from exposure time (converting microseconds to seconds)
-    ROS_INFO("COMPUTED RATE IN HZ : %f\n", fps);
     ros::Rate rate(fps);
-    ROS_INFO("CONFIGURED RATE : %f\n", fps);
     // Main camera loop
     while (ros::ok()) {
 
@@ -108,31 +106,13 @@ void VisionNodeFrames::run() {
     closeRecorder();
 }
 
-void VisionNodeFrames::loadParameters() {
-    // GET THE INPUT PARAMETERS, Live or from a file (.aedat4)
-    
-    // Load timing file path
-    nh.getParam("/timingFileEnable", timingFileEnable);
-    //then write the timing file name with the current timestamp
-
-    //load the altitude file path
-    nh.getParam("/altitudeFileEnable", altitudeFileEnable);
-
-    //load the imu file path
-    nh.getParam("/imuFileEnable", imuFileEnable);
-
-    //load the gps file path
-    nh.getParam("/gpsFileEnable", gpsFileEnable);
+void VisionNodeFrames::loadParameters() {    
 
     // Get FAST parameters
     nh.getParam("/FAST/threshold", fastParams.threshold);
     nh.getParam("/FAST/nonmaxSuppression", fastParams.nonmaxSuppression);
-    nh.getParam("/FAST/randomSampleFilter/enable", fastParams.randomSampleFilterEnable);
-    nh.getParam("/FAST/randomSampleFilter/ratio", fastParams.randomSampleFilterRatio);
     nh.getParam("/FAST/gradientScoring/enable", fastParams.gradientScoringEnable);
     nh.getParam("/FAST/gradientScoring/desiredFeatures", fastParams.desiredFeatures);
-        //safeFeatures : use the SOBEL FILTER in case of no features detected
-    nh.getParam("/FAST/safeFeatures", fastParams.safeFeatures);
 
     // Get camera parameters
     nh.getParam("/CAMERA/downSampling/enable", camParams.downsampleEnable);
@@ -212,10 +192,6 @@ void VisionNodeFrames::loadParameters() {
     gyroBufferLength = (gyroBufferLength <= 0) ? 5 : gyroBufferLength;    //assume a default value of 5
 
 
-    //check if the variable to show the video is true
-    nh.getParam("/showOF", showOF);     //0 : do not show0, 1 : show video and OF vectors
-    nh.getParam("/showOFDerotated", showOFDerotated);     //0 : do not show0, 1 : show video and OF vectors
-
         // Check if downsampling is enabled
     ROS_INFO("downsample : %d\n", camParams.downsampleEnable);
     ROS_INFO("width : %d\n", camParams.resolution.width);
@@ -272,66 +248,13 @@ void VisionNodeFrames::loadParameters() {
     return;
 }
 
-void VisionNodeFrames::initializeOutputFile() {
-    // Open timing file
-    if(timingFileEnable)
-    {
-        timingFileStream.open(timingFilePath, std::ios::out);
-        if (timingFileStream.is_open()) {
-            ROS_INFO("Timing file opened, with name : %s", timingFilePath.c_str());
-            //writing headers
-            timingFileStream << "Timestamp,frameID,acquiringImage,resizingImage,OpticalFlow,FeatureDetection,TotalProcessingTime,detectedFeatures,filteredDetectedFeatures,rejectedVectors\n";
-        }
-    }
-    
-    //initialize altitude file
-    if(altitudeFileEnable){
-        altitudeFileStream.open(altitudeFilePath, std::ios::out);
-        if(altitudeFileStream.is_open()){
-            ROS_INFO("Altitude file opened, with name : %s", altitudeFilePath.c_str());
-            altitudeFileStream << "Timestamp,frameID,estimatedAltitude,unfilteredAltitude,lidarData,Vx_body_FRD,Vy_body_FRD,Vz_body_FRD,Airspeed,Groundspeed,RollAngle,PitchAngle\n";
-        }
-    }   
-
-
-    if(imuFileEnable){
-        imuFileStream.open(imuFilePath, std::ios::out);
-        if(imuFileStream.is_open()){
-            ROS_INFO("IMU file opened, with name : %s", imuFilePath.c_str());
-            imuFileStream << "Timestamp,qx,qy,qz,qw,gx,gy,gz,ax,ay,az,lidarData,Airspeed,Groundspeed,RollAngle,PitchAngle\n";
-        }
-    }
-
-    if(gpsFileEnable) {
-        gpsFileStream.open(gpsFilePath, std::ios::out);
-        gpsLocalFileStream.open(gpsLocalFilePath, std::ios::out);
-        if (gpsFileStream.is_open()) {
-            ROS_INFO("GPS file opened, with name: %s", gpsFilePath.c_str());
-            gpsFileStream << "Timestamp,Latitude,Longitude,Altitude,VelX,VelY,VelZ,AngVelX,AngVelY,AngVelZ\n";
-        }
-        if (gpsLocalFileStream.is_open()) {
-            ROS_INFO("GPS LOCAL file opened, with name: %s", gpsLocalFilePath.c_str());
-            gpsLocalFileStream << "Timestamp,x_NED,y_NED,z_NED,velx_NED,vely_NED,velz_NED,vision_source\n";
-        }
-
-    }
-
-    return;
-}
-
 
 
 cv::Mat &VisionNodeFrames::acquireImage()
 {
-    //getting the image from the camera
-    //ROS_INFO("getting next image \n");
-        //apply deblurring eventually
-    auto startGetimage = std::chrono::high_resolution_clock::now();
 
     pImage = pCam->GetNextImage();
 
-    auto stopGetImage = std::chrono::high_resolution_clock::now();
-    getImageTime = std::chrono::duration_cast<std::chrono::microseconds>(stopGetImage - startGetimage).count();
 
     currentTimestamp = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
 
@@ -343,8 +266,6 @@ cv::Mat &VisionNodeFrames::acquireImage()
         ROS_ERROR("Image incomplete");
     }
 
-    // Convert the image to a format OpenCV can work with (BGR)
-    //ROS_INFO("converting the image into pdata\n");
 
     unsigned char* pData = static_cast<unsigned char*>(pImage->GetData());
 
@@ -352,8 +273,7 @@ cv::Mat &VisionNodeFrames::acquireImage()
         ROS_ERROR("Null image data pointer");
     }
 
-    //creating the matrix form of the image retrieved from the camera
-    //ROS_INFO("creating matrix from the image\n");
+
     int width = pImage->GetWidth();
     int height = pImage->GetHeight();
     //ROS_INFO("creating matrix of : %dx%d\n", width, height);
@@ -427,48 +347,11 @@ void VisionNodeFrames::applyCornerDetection(const cv::Mat &image) {
 
     detectedFeatures = keypoints.size();
 
-    // Randomly sample keypoints
-    if (fastParams.randomSampleFilterEnable) {
-
-        keypoints = randomlySampleKeypoints(keypoints, fastParams.desiredFeatures, fastParams.randomSampleFilterRatio);
-    }
 
     // Apply gradient scoring if enabled
 
     if (fastParams.gradientScoringEnable) {
         keypoints = scoreAndRankKeypointsUsingGradient(keypoints, image, fastParams.desiredFeatures);
-    }
-
-    //CHECK IF THE NUMBER OF DETECTED FEATURES IS < 0.5 * DESIRED FEATURES, and so check if the safeFeatures is enabled
-    if(!fastParams.randomSampleFilterEnable && !fastParams.gradientScoringEnable)
-    {
-        if(fastParams.safeFeatures && detectedFeatures < 0.5*fastParams.desiredFeatures)
-        {
-            //set the flag up for the safeFeatures = ON
-            safeFeaturesApplied = true;
-
-            //select a lower threshold for the fast detector, 50 to make sure features are detected
-            fastDetector->setThreshold(1); //threshold = 50
-
-            keypoints.clear();
-            //apply again the fast detection with the new threshold
-            fastDetector->detect(image, keypoints);
-
-            //now apply the randomsamplefilter and the gradient scoring
-            // Randomly sample keypoints with a ratio of 0.5
-            keypoints = randomlySampleKeypoints(keypoints, fastParams.desiredFeatures, 0.5);
-
-            // Apply gradient scoring
-            keypoints = scoreAndRankKeypointsUsingGradient(keypoints, image, fastParams.desiredFeatures);
-
-            //restore the previous threshold
-            fastDetector->setThreshold(fastParams.threshold);
-        }
-        // If neither random sampling nor gradient scoring is applied, perform random sampling to get the desired number of features
-        else {
-            //apply the random sample filter normally
-            keypoints = randomlySampleKeypoints(keypoints, fastParams.desiredFeatures, 0.0);
-        }
     }
     
 
@@ -481,17 +364,10 @@ void VisionNodeFrames::applyCornerDetection(const cv::Mat &image) {
 
 void VisionNodeFrames::applyCornerDetection(const cv::Mat &edgeImage, std::vector<cv::Point2f> &output) {
     std::vector<cv::KeyPoint> keypoints;
-    safeFeaturesApplied = false;   //prepare for this slice, clear the others
     
     fastDetector->detect(edgeImage, keypoints);
 
     detectedFeatures = keypoints.size();
-
-    // Randomly sample keypoints
-    if (fastParams.randomSampleFilterEnable) {
-
-        keypoints = randomlySampleKeypoints(keypoints, fastParams.desiredFeatures, fastParams.randomSampleFilterRatio);
-    }
 
     // Apply gradient scoring if enabled
 
@@ -499,37 +375,6 @@ void VisionNodeFrames::applyCornerDetection(const cv::Mat &edgeImage, std::vecto
         keypoints = scoreAndRankKeypointsUsingGradient(keypoints, edgeImage, fastParams.desiredFeatures);
     }
 
-    //CHECK IF THE NUMBER OF DETECTED FEATURES IS < 0.5 * DESIRED FEATURES, and so check if the safeFeatures is enabled
-    if(!fastParams.randomSampleFilterEnable && !fastParams.gradientScoringEnable)
-    {
-        if(fastParams.safeFeatures && detectedFeatures < 0.5*fastParams.desiredFeatures)
-        {
-            //set the flag up for the safeFeatures = ON
-            safeFeaturesApplied = true;
-
-            //select a lower threshold for the fast detector, 50 to make sure features are detected
-            fastDetector->setThreshold(50); //threshold = 50
-
-            keypoints.clear();
-            //apply again the fast detection with the new threshold
-            fastDetector->detect(edgeImage, keypoints);
-
-            //now apply the randomsamplefilter and the gradient scoring
-            // Randomly sample keypoints with a ratio of 0.5
-            keypoints = randomlySampleKeypoints(keypoints, fastParams.desiredFeatures, 0.5);
-
-            // Apply gradient scoring
-            keypoints = scoreAndRankKeypointsUsingGradient(keypoints, edgeImage, fastParams.desiredFeatures);
-
-            //restore the previous threshold
-            fastDetector->setThreshold(fastParams.threshold);
-        }
-        // If neither random sampling nor gradient scoring is applied, perform random sampling to get the desired number of features
-        else {
-            //apply the random sample filter normally
-            keypoints = randomlySampleKeypoints(keypoints, fastParams.desiredFeatures, 0.0);
-        }
-    }
     
 
     filteredDetectedFeatures = keypoints.size();
@@ -541,7 +386,6 @@ void VisionNodeFrames::applyCornerDetection(const cv::Mat &edgeImage, std::vecto
 
 void VisionNodeFrames::processFrames() {
 
-    auto startTotal = std::chrono::high_resolution_clock::now();
 
     //acquire image
     cv::Mat currImage = acquireImage();     //get the image from the camera pointer pCam
@@ -553,23 +397,17 @@ void VisionNodeFrames::processFrames() {
         saveFrameToVideo();
     }
 
-    auto startOpticalFlow = std::chrono::high_resolution_clock::now();
 
     //call the opticalFlow function
 
     calculateOpticalFlow(currImage);
 
-    auto endOpticalFlow = std::chrono::high_resolution_clock::now();
-    ofTime = std::chrono::duration_cast<std::chrono::microseconds>(endOpticalFlow - startOpticalFlow).count();
 
     prevPoints.clear();
 
-    auto startFeatureDetection = std::chrono::high_resolution_clock::now();
     
     applyCornerDetection(currImage);
 
-    auto endFeatureDetection = std::chrono::high_resolution_clock::now();
-    featureDetectionTime = std::chrono::duration_cast<std::chrono::microseconds>(endFeatureDetection - startFeatureDetection).count();
 
     prevImage = currImage.clone();
 
@@ -578,18 +416,6 @@ void VisionNodeFrames::processFrames() {
     // Release the image
     pImage->Release();
 
-    auto endTotal = std::chrono::high_resolution_clock::now();
-    totalProcessingFrameTime = std::chrono::duration_cast<std::chrono::microseconds>(endTotal - startTotal).count();
-
-    //eventually write the altitudes into the file
-    if (altitudeFileStream.is_open()) {
-        altitudeFileStream << currentTimestamp << "," << frameID << "," << filteredAltitude << "," << unfilteredAltitude << "," << lidarCurrentData <<"," << T_GPS_body_FRD[0] << "," << T_GPS_body_FRD[1] << "," << T_GPS_body_FRD[2] << "," << norm(T_airspeed) << "," << norm(T_groundspeed) << "," << rollDeg << "," << pitchDeg << "\n";
-    }
-
-    //always write timings
-    if (timingFileStream.is_open()) {
-        timingFileStream << currentTimestamp << "," << frameID << "," << getImageTime << "," << resizeImageTime << "," << ofTime << "," << featureDetectionTime  << "," << totalProcessingFrameTime << "," << detectedFeatures << "," << filteredDetectedFeatures << "," << rejectedVectors << "\n";
-    }
 
 }
 
@@ -597,7 +423,7 @@ void VisionNodeFrames::processFrames() {
 void VisionNodeFrames::processFramesParallel() {
 
     /*
-        THIS FUNCTION IS ANALOGOUS TO THE processEvents FUNCTION, BUT INSTEAD OF THE POSSIBILITY OF DOWNSAMPLING
+        THIS FUNCTION IS ANALOGOUS TO THE processEvents FUNCTION
         IT PROCESS THE FAST FEATURE DETECTOR AND THE LK+ALTITUDE IN PARALLEL MANNER
 
         SINCE THE FAST FEATURE DETECTOR PRODUCES THE prevpoints, used by the LK to compute the currPoints, 
@@ -615,7 +441,6 @@ void VisionNodeFrames::processFramesParallel() {
     {
         saveFrameToVideo();
     }
-    auto startLKFAST = std::chrono::high_resolution_clock::now();
     //START THE PARALLEL THREAD FOR FAST, defined in this way in the header.
     //specify that the function saves the features into nextprevpoints, instead of the default prevpoints as in serial fashion
     //     std::thread FASTThread;   
@@ -641,26 +466,9 @@ void VisionNodeFrames::processFramesParallel() {
     //copy the nextPrevPoints into prevPoints
     prevPoints = nextPrevPoints;    //to avoid conflidcts with the other thread
 
-    auto endLKFAST = std::chrono::high_resolution_clock::now();
-
-    ofTime = std::chrono::duration_cast<std::chrono::microseconds>(endLKFAST - startLKFAST).count();
 
     // Release the image
     pImage->Release();
-
-    auto endTotal = std::chrono::high_resolution_clock::now();
-    totalProcessingFrameTime = std::chrono::duration_cast<std::chrono::microseconds>(endTotal - startTotal).count();
-
-
-    //eventually write the altitudes into the file
-    if (altitudeFileStream.is_open()) {
-        altitudeFileStream << currentTimestamp << "," << frameID << "," << filteredAltitude << "," << unfilteredAltitude << "," << lidarCurrentData <<"," << T_GPS_body_FRD[0] << "," << T_GPS_body_FRD[1] << "," << T_GPS_body_FRD[2] << "," << norm(T_airspeed) << "," << norm(T_groundspeed) << "," << rollDeg << "," << pitchDeg << "\n";
-    }
-
-    //always write timings
-    if (timingFileStream.is_open()) {
-        timingFileStream << currentTimestamp << "," << frameID << "," << getImageTime << "," << resizeImageTime << "," << ofTime << "," << 0 << "," << totalProcessingFrameTime << "," << detectedFeatures << "," << filteredDetectedFeatures << "," << rejectedVectors << "\n";
-    }
 
 }
 
@@ -691,32 +499,8 @@ void VisionNodeFrames::calculateOpticalFlow(const cv::Mat &currImage) {
         }
         uDegSec /= flowVectors.size();
         vDegSec /= flowVectors.size();
-        //double uDegSec = std::accumulate(flowVectors.begin().uDegSec, flowVectors.end().uDegSec, 0.0f) / flowVectors.size();
-        //double vDegSec = std::accumulate(flowVectors.begin().vDegSec, flowVectors.end().vDegSec, 0.0f) / flowVectors.size();
-
-        //ROS_INFO("OF VECTORS (%.2f,%.2f)",uDegSec,vDegSec);
 
 
-        if (showOF)
-        {
-            cv::Mat flowVisualisation;
-            //std::cout << "Visualizing optical flow..." << std::endl;
-
-            cv::cvtColor(currImage, flowVisualisation, cv::COLOR_GRAY2BGR);
-
-            for (size_t i = 0; i < currPoints.size(); i++) {
-                if (status[i]) {
-                    float magnitude = cv::norm(currPoints[i] - prevPoints[i]);
-                    int intensity = std::min(255, static_cast<int>(magnitude*10));
-                    float ratio = intensity / 255.0f; // Normalize intensity to [0, 1]
-                    cv::Scalar color = cv::Scalar(0,255,0) * (1 - ratio) + cv::Scalar(255,0,0) * ratio;
-                    cv::arrowedLine(flowVisualisation, prevPoints[i], currPoints[i], color, 2);
-                    }
-            }
-
-            cv::imshow("OF", flowVisualisation);
-            cv::waitKey(1);
-        }
 
         filteredFlowVectors = rejectOutliers(flowVectors, magnitudeThresholdPixel, boundThreshold);
 
@@ -725,12 +509,6 @@ void VisionNodeFrames::calculateOpticalFlow(const cv::Mat &currImage) {
 
         //APPLY THE DEROTATION
         avgGyro_rad_cam = getGyroData();        //get gyro data in camera mode from the px4 data (since the CAMERA does not contain a gyro)
-
-        //data is in FRD form, so to compare with the one of the camera,not inclined, we have xcam = ybody, ycam = zbody
-        //ROS_INFO("GYRO DATA FRD: (%.2f,%.2f)\n\n", avgGyro[2] * (180.0/CV_PI), avgGyro[1] * (180.0/CV_PI));
-
-        //COMPUT THE RATIO BETWEEN ESTIMATED AND GYRO DATA
-        //ROS_INFO("ratio : (%.2f,%2f)", abs((uDegSec/(avgGyro[2] * (180.0/CV_PI)))), abs(vDegSec/(avgGyro[1] * (180.0/CV_PI))));
 
 
         std::vector<float> ratios;
@@ -744,28 +522,6 @@ void VisionNodeFrames::calculateOpticalFlow(const cv::Mat &currImage) {
         //float mean_ratio = std::accumulate(ratios.begin(), ratios.end(), 0.0f) / ratios.size();
         //ROS_INFO("DEROTATED : %.2f \n", mean_ratio);
 
-        //show video if enabled
-
-        if (showOFDerotated)
-        {
-            cv::Mat flowVisualisationDerotated;
-            //std::cout << "Visualizing optical flow..." << std::endl;
-
-            //create a vector of derotated OF vectors
-            cv::cvtColor(currImage, flowVisualisationDerotated, cv::COLOR_GRAY2BGR);
-
-            for(auto& ofVector : filteredFlowVectors)
-            {
-                OFVectorFrame derOFVector(ofVector.position, ofVector.nextPosition, fps, camParams);
-                
-                //push the vector into the vector of OF vectors
-                cv::arrowedLine(flowVisualisationDerotated, derOFVector.position, derOFVector.nextPosition, cv::Scalar(255, 255, 0), 2);
-
-            }
-
-            cv::imshow("OF_derotated", flowVisualisationDerotated);
-            cv::waitKey(1);
-        }
     }
 }
 
@@ -935,13 +691,6 @@ void VisionNodeFrames::velocityLocalCallback(const geometry_msgs::TwistStamped::
     T_GPS_local_NED = cv::Vec3f(T_GPS_local_ENU[1], T_GPS_local_ENU[0], -T_GPS_local_ENU[2]);
     //ROS_INFO("LOCAL VEL NED (vx,vy,vz) : (%f , %f, %f)", T_GPS_local_NED[0], T_GPS_local_NED[1], T_GPS_local_NED[2]);
 
-    //write them into a file for gps local system
-    has_local_vel = true;
-
-    latest_timestamp_local = static_cast<uint64_t>(msg->header.stamp.sec) * 1e6 + msg->header.stamp.nsec / 1e3;
-
-
-    writeLocalToFileIfReady();
 
 }
 
@@ -951,12 +700,6 @@ void VisionNodeFrames::localPositionCallback(const geometry_msgs::PoseStamped::C
     localPosition_ENU = cv::Vec3f(msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
     localPosition_NED = cv::Vec3f(localPosition_ENU[1], localPosition_ENU[0], -localPosition_ENU[2]);
 
-    //ROS_INFO("LOCAL POS NED (x,y,z) : (%f , %f, %f)", localPosition_NED[0], localPosition_NED[1], localPosition_NED[2]);
-    latest_timestamp_local = static_cast<uint64_t>(msg->header.stamp.sec) * 1e6 + msg->header.stamp.nsec / 1e3;
-
-    //write the position into the gps local file
-    has_local_pos = true;
-    writeLocalToFileIfReady();
 }
 
 
@@ -998,15 +741,6 @@ void VisionNodeFrames::imuCallback(const sensor_msgs::Imu::ConstPtr &msg)
     // Extract the timestamp in microseconds
     uint64_t timestamp_imu_us = static_cast<uint64_t>(msg->header.stamp.sec) * 1e6 + msg->header.stamp.nsec / 1e3;
 
-    // Log the data to the file
-    if (imuFileStream.is_open())
-    {
-        imuFileStream << timestamp_imu_us << ","; // Timestamp in microseconds
-        imuFileStream << msg->orientation.x << "," << msg->orientation.y << "," << msg->orientation.z << "," << msg->orientation.w << ","; // Quaternion
-        imuFileStream << msg->angular_velocity.x << "," << msg->angular_velocity.y << "," << msg->angular_velocity.z << ","; // Gyro
-        imuFileStream << msg->linear_acceleration.x << "," << msg->linear_acceleration.y << "," << msg->linear_acceleration.z << "," ; // Accelerometer
-        imuFileStream << lidarCurrentData << "," << T_airspeed[0] << "," << T_groundspeed[0] << "," << rollDeg << "," << pitchDeg << "\n" ; //velocity data
-    }
 }
 
 
@@ -1159,12 +893,6 @@ void VisionNodeFrames::gpsFixCallback(const sensor_msgs::NavSatFix::ConstPtr &ms
     latest_gps_longitude = msg->longitude;
     latest_gps_altitude = msg->altitude;
 
-    // Extract the timestamp in microseconds
-    latest_timestamp = static_cast<uint64_t>(msg->header.stamp.sec) * 1e6 + msg->header.stamp.nsec / 1e3;
-
-    has_fix = true;
-
-    writeToFileIfReady();
 }
 
 void VisionNodeFrames::gpsVelCallback(const geometry_msgs::TwistStamped::ConstPtr &msg) {
@@ -1176,41 +904,7 @@ void VisionNodeFrames::gpsVelCallback(const geometry_msgs::TwistStamped::ConstPt
     latest_gps_ang_vel_y = msg->twist.angular.y;
     latest_gps_ang_vel_z = msg->twist.angular.z;
 
-    has_velocity = true;
-
-    writeToFileIfReady();
 }
-
-void VisionNodeFrames::writeToFileIfReady() {
-    // Write to the file only if we have received all three data points
-    if (has_fix && has_velocity) {
-        if (gpsFileStream.is_open()) {
-            gpsFileStream << latest_timestamp << ","
-                          << latest_gps_latitude << "," << latest_gps_longitude << "," << latest_gps_altitude << ","
-                          << latest_gps_vel_x << "," << latest_gps_vel_y << "," << latest_gps_vel_z << ","
-                          << latest_gps_ang_vel_x << "," << latest_gps_ang_vel_y << "," << latest_gps_ang_vel_z << "\n";
-        }
-        // Reset flags after writing to ensure fresh data is captured
-        has_fix = false;
-        has_velocity = false;
-    }
-}
-
-
-void VisionNodeFrames::writeLocalToFileIfReady() {
-    // Write to the file only if we have received all three data points
-
-    if (has_local_pos && has_local_vel) {
-        if (gpsLocalFileStream.is_open()) {
-            gpsLocalFileStream << latest_timestamp_local << "," << localPosition_NED[0] << "," << localPosition_NED[1] << "," << localPosition_NED[2]
-            << "," << T_GPS_local_NED[0] << "," << T_GPS_local_NED[1] << "," << T_GPS_local_NED[2] << "," << publishAltitude << "\n";
-        }
-        // Reset flags after writing to ensure fresh data is captured
-        has_local_pos = false;
-        has_local_vel = false;
-    }
-}
-
 
 
 void VisionNodeFrames::configureExposure(CameraPtr pCam, int exposure)
@@ -1298,36 +992,15 @@ void VisionNodeFrames::rcCallback(const mavros_msgs::RCIn::ConstPtr &msg) {
             std::string date_folder = date_str.substr(6, 2) + date_str.substr(4, 2) + date_str.substr(2, 2);
 
             std::string base_path = "/home/sharedData/test" + date_folder;
-            std::string altitude_dir = base_path + "/altitude";
-            std::string time_dir = base_path + "/time";
-            std::string imu_dir = base_path + "/imu";
-            std::string gps_dir = base_path + "/gps";
-            std::string gps_local_dir = base_path + "/gps_local";
             std::string rec_dir = base_path + "/recordings";
 
-            if (!std::filesystem::exists(altitude_dir)) std::filesystem::create_directories(altitude_dir);
-            if (!std::filesystem::exists(time_dir)) std::filesystem::create_directories(time_dir);
-            if (!std::filesystem::exists(imu_dir)) std::filesystem::create_directories(imu_dir);
-            if (!std::filesystem::exists(gps_dir)) std::filesystem::create_directories(gps_dir);
-            if (!std::filesystem::exists(gps_local_dir)) std::filesystem::create_directories(gps_local_dir);
             if (!std::filesystem::exists(rec_dir)) std::filesystem::create_directories(rec_dir);
 
             std::string timestamp_str = boost::posix_time::to_iso_string(now);
-            std::string altitude_filename = altitude_dir + "/altitude_" + timestamp_str + ".csv";
-            std::string time_filename = time_dir + "/timing_" + timestamp_str + ".csv";
-            std::string imu_filename = imu_dir + "/imu_" + timestamp_str + ".csv";
-            std::string gps_filename = gps_dir + "/gps_" + timestamp_str + ".csv";
-            std::string gps_local_filename = gps_local_dir + "/gps_local_" + timestamp_str + ".csv";
             std::string rec_filename = rec_dir + "/rec" + timestamp_str + ".avi";
 
-            altitudeFilePath = altitude_filename;
-            timingFilePath = time_filename;
-            imuFilePath = imu_filename;
-            gpsFilePath = gps_filename;
-            gpsLocalFilePath = gps_local_filename;
             recFilePath = rec_filename;
 
-            initializeOutputFile();
             initializeRecordingFile(recFilePath);
 
             ROS_INFO("CAM AND RECORDER INITIALIZED\n");
@@ -1347,29 +1020,12 @@ void VisionNodeFrames::rcCallback(const mavros_msgs::RCIn::ConstPtr &msg) {
         if (wasReadFramesOn) {
             ROS_INFO("CAM AND RECORDING OFF\n");
 
-            if (timingFileStream.is_open()) {
-                timingFileStream.close();
-            }
-            if (altitudeFileStream.is_open()) {
-                altitudeFileStream.close();
-            }
-            if (imuFileStream.is_open()) {
-                imuFileStream.close();
-            }
-            if (gpsFileStream.is_open()) {
-                gpsFileStream.close();
-            }
-            if (gpsLocalFileStream.is_open()) {
-                gpsLocalFileStream.close();
-            }
 
             {
                 std::lock_guard<std::mutex> lock(recorder_mutex);
                 closeRecorder();
             }
 
-            std::string files_end = "SAVING DONE \n";
-            sendStatusText(files_end, 6);
         }
 
         wasReadFramesOn = false;

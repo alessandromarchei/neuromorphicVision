@@ -235,7 +235,22 @@ private:
     bool safeFeaturesApplied = false;                                       //flag to check if the safe features are applied
     int filteredDetectedFeatures = 0;                                              //number of features after the rejection filter
 
+    //adaptive slicing mechanism
+    float adaptiveTimeWindow = 0.0;   //in ms
+    bool adaptiveSlicingEnable = false;
+    float P_adaptiveSlicing = 0.0;
+    float I_adaptiveSlicing = 0.0;
+    float D_adaptiveSlicing = 0.0;
+    float maxTimingWindow = 0.0;
+    float minTimingWindow = 0.0;
+    float thresholdPIDEvents = 0.0;
+    float OFPixelSetpoint = 0.0;
+    float PIDoutput = 0.0;
+    float integralError = 0.0;
+    float previousError = 0.0;
+    float adaptiveTimingWindowStep = 0.0;
 
+    
     //PARALLEL FAST AND LK
     bool FASTLKParallel = false;
      //the thread for FAST, in parallel with LK. IT WILL PRODUCE nextprevPoints, that will be then saved in prevPoints
@@ -246,7 +261,6 @@ private:
     void initializeAccumulator();
     void initializeFeatureDetector();
     void initializeCamera();
-    void initializeOutputFile();
     void initializeSlicer();
 
     void processEvents(const dv::EventStore& events, dv::cvector<dv::IMU>& imu);
@@ -284,10 +298,9 @@ private:
     void syncSystemTimeWithGPS();
     void gpsFixCallback(const sensor_msgs::NavSatFix::ConstPtr &msg);
     void gpsVelCallback(const geometry_msgs::TwistStamped::ConstPtr &msg);
-    void writeToFileIfReady();
-    void writeLocalToFileIfReady();
 
-
+    //adaptive slicing
+    void applyAdaptiveSlicing();
     void initializeRecordingFile();
     void saveEvents(const dv::EventStore &events, const dv::cvector<dv::IMU> &imu_cam);    
 };

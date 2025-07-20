@@ -235,7 +235,6 @@ private:
     void loadParameters();
     void initializeFeatureDetector();
     void initializeCamera();
-    void initializeOutputFile();
     void configureExposure(CameraPtr pCam, int exposure);
     void initializeRecordingFile(const std::string& filePath);
 
@@ -281,8 +280,6 @@ private:
     void syncSystemTimeWithGPS();
     void gpsFixCallback(const sensor_msgs::NavSatFix::ConstPtr &msg);
     void gpsVelCallback(const geometry_msgs::TwistStamped::ConstPtr &msg);
-    void writeToFileIfReady();
-    void writeLocalToFileIfReady();
 
 };
 
