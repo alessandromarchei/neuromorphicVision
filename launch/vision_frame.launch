@@ -1,0 +1,18 @@
+<launch>
+    
+    <!-- this launch file serves as driving the flir camera instead of the DVXplorer Micro -->
+
+    <!-- previous config file -->
+    <!-- <rosparam file="$(find lis_nv)/config/config.yaml" command="load"/>-->
+    <!-- now moved into /home/sharedData to allow modifications from host -->
+    <rosparam file="/home/sharedData/config/config_flir.yaml" command="load"/>
+
+
+    <!-- LAUNCH MAVROS NODE, running at port USB0 at 921600 baud/sec -->
+    <include file="$(find mavros)/launch/px4.launch" >
+        <arg name="fcu_url" value="/dev/ttyUSB0:921600"/>
+    </include>
+
+    <!-- LAUNCH VISION NODE -->
+    <node name="vision_node_frames" pkg="lis_nv" type="vision_node_frames" output="screen"/>
+</launch>

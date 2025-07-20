@@ -1,0 +1,146 @@
+#TIMING PATH Output
+timingFileEnable: true
+
+#altitude path OUTPUT
+altitudeFileEnable: true
+
+imuFileEnable: true
+
+gpsFileEnable: true
+
+#CORNER DETECTOR PARAMETERS
+FAST:
+  threshold: 10
+  nonmaxSuppression: false
+  randomSampleFilter:
+    enable: true
+    ratio: 0.5
+  gradientScoring:
+    enable: true
+    desiredFeatures: 100
+  safeFeatures: false    #if true, use the SOBEL FILTER in case of number of features < desiredFeatures * 0.5
+
+
+CAMERA:
+  resolution:
+    width: 1440
+    height: 1080
+
+  downSampling:
+    enable: true  # Flag to enable/disable down-sampling
+    width: 640
+    height: 480
+
+  #fps = 60 means EXPOSURE TIME < 16666
+  exposureTime: 0  # Exposure time in microseconds, ==> that produces FPS : MAX VALUE FOR FPS = 60
+    
+  
+  #WITH THE 6mm lens (ARDUCAM)
+
+  fx : 1786.89201
+  fy : 1785.46973
+  cx : 681.47197
+  cy : 522.977618
+  pixelSize: 0.00000345 #3.45 uMeters
+
+
+
+
+  #CAMERA INCLINATION
+  # inclination: 45.0  #in degrees, from 0 to +90. Positive direction = downward
+  inclination: 45.0  #in degrees, from 0 to +90. Positive direction = downward
+  
+
+
+LK:
+  winSize:
+    width: 40  # Width of the window for Lucas-Kanade optical flow  (default: 21)
+    height: 40  # Height of the window for Lucas-Kanade optical flow  (default: 21)
+
+  maxLevel: 4  # Maximum pyramid level for Lucas-Kanade optical flow (default: 3)
+
+  criteria:
+    maxCount: 40  # Maximum number of iterations for Lucas-Kanade optical flow (default: 30)
+    epsilon: 0.01  # Threshold for termination criteria of Lucas-Kanade optical flow (default: 0.01)
+
+  flags: 0  # Flags for Lucas-Kanade optical flow 
+  minEigThreshold: 0.001  # Threshold for minimum eigenvalue of Lucas-Kanade optical flow 
+
+FASTLKParallel : true   #PARALLEL IMPLEMENTATION OF THE FAST WITH LK ==> better speed
+
+
+REJECTION_FILTER:
+  magnitudeThresholdPixel: 75   #magnitude threshold for the vectors. it is in PIXEL displacement
+  boundThreshold: 1.50          #threshold for rejecting the vectors magnitude. it must be > 1.0
+
+
+#LOW PASS FILTER
+SMOOTHINGFILTER:
+  enable: true
+  type: 0   # 0 : COMPLEMENTARY FILTER, 1 : LOW PASS FILTER
+  lpfK: 0.7  #coefficient for the low pass filter. 0.5 is the default value
+  complementaryK: 2.3 #coefficient for the complementary filter.
+
+
+#altitude parameters
+ALTITUDE:
+  type: 0   # 0:average, 1:median
+  saturationValue: 45   #in meters, if values over this are computed, than saturate to this
+
+#safety parameters
+lidarMax : 1.5    #in meters. if lidar the lidar detects less than this, publish this value rather than the vision based altitude
+
+publishAltitudeFrequency: 50  #in Hz. IT MUST BE BETWEEN 30 and 50 Hz
+
+velocitySource : 0 # 0: airspped, 1: groundspeed
+
+
+#GPS TIMEOUT
+gpsTimeout: 5  #in seconds
+
+gyroBufferLength: 1  #buffer length for storing the values of the gyroscope from the px4
+
+
+#DEBUGGING : VISUALIZE OPTICAL FLOW VECTORS ON THE IMAGE
+showOF: false
+showOFDerotated: false
+
+
+#deblurring
+
+DEBLUR:
+  # Method selection impacts performance significantly
+  # Performance from fastest to slowest:
+  # 1. laplacian (~0.5-1ms)
+  # 2. unsharp (~1-2ms)
+  # 3. bilateral (~2-5ms)
+  # 4. richardson_lucy (~10-20ms)
+  method: "laplacian"
+  enable: false
+  showDebug: false 
+
+  # Laplacian - Fastest method
+  laplacian:
+    strength: 1.0       # Minimal performance impact, it increase NOISE if too high
+    kernelSize: 1       # Major impact: 3 is fastest, each increment doubles computation
+    normalize: true    # Disable for ~5% speed improvement
+
+  # Unsharp Mask - Good balance
+  unsharp:
+    sigma: 1.0         # Minor impact
+    strength: 1.5      # Minimal impact
+    kernelSize: 5      # Major impact: Keep at 3 for real-time
+                       # Each size increase adds ~50% computation time
+
+  # Bilateral Filter - More expensive
+  bilateral:
+    diameter: 1        # Critical impact: Each increment adds significant computation
+    sigmaColor: 75.0   # Moderate impact: Higher values slightly increase computation
+    sigmaSpace: 75.0   # Moderate impact: Similar to sigmaColor
+    borderType: 4      # Minimal impact: BORDER_DEFAULT is fastest
+
+  # Richardson-Lucy - Most expensive
+  richardsonLucy:
+    maxIterations: 3   # Linear impact: Each iteration adds ~33% computation time
+    kernelSize: 7      # Quadratic impact: Dramatic increase with size
+    sigma: 2.0         # Minimal impact
