@@ -1,4 +1,4 @@
-# lis_nv: Visual Navigation Pipeline for Event- and Frame-Based Cameras
+# Event-Based and Frame-Based pipeline for altitude estimation and landing on a Fixed-Wing drone
 
 This repository contains the ROS Noetic package `lis_nv`, developed for onboard visual navigation on a Raspberry Pi 5. It supports both **event-based cameras (e.g. DVXplorer Micro)** and **frame-based cameras (e.g. FLIR Blackfly using Spinnaker SDK)**, and is designed for real-time deployment alongside PX4 through MAVROS. This code was developed as part of the experiments presented in our paper.
 
@@ -10,15 +10,10 @@ Before building this repository, install the following system and ROS dependenci
 
 ### 🔹 1. Event Camera — `dv-processing`
 
-Install the event-based vision processing library provided by iniVation:
+Install the event-based vision processing library provided by iniVation, and follow their instructions to set it up:
 
 ```bash
 git clone https://gitlab.com/inivation/dv/dv-processing.git
-cd dv-processing
-mkdir build && cd build
-cmake ..
-make -j$(nproc)
-sudo make install
 ```
 
 > This must be installed **before** building your ROS workspace.
