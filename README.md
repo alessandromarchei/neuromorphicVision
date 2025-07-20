@@ -64,6 +64,8 @@ sudo ./install_geographiclib_datasets.sh
 
 This package is intended to be built with `catkin_tools`.
 
+Note that the `CmakeLists.txt` file in this repository is configured to optimize for the Raspberry Pi 5 architecture (ARM). In case you use different architectures, you should change the optimization flags and destination targets accordingly.
+
 ```bash
 # Install catkin tools if not already
 sudo apt install python3-catkin-tools
@@ -84,13 +86,11 @@ catkin config --cmake-args -DCMAKE_BUILD_TYPE=Release
 catkin build
 ```
 
-
-Note that the `CmakeLists.txt` file in this repository is configured to optimize for the Raspberry Pi 5 architecture (ARM). In case you use different architectures, you should change the optimization flags and destination targets accordingly.
 ---
 
 ## Hardware Setup
 
-To build this system, we have used the same fixed-wing drone platform available in this repository: [lis_fixed_wing](https://github.com/lis-epfl/lis-vision-flight).
+To build this system, we have used the same fixed-wing drone platform available in this repository: [lis_vision_flight](https://github.com/lis-epfl/lis-vision-flight).
 The drone is equipped with:
 - **PX4 Autopilot** (e.g. Pixhawk 4)
 - **Raspberry Pi 5** (running Ubuntu 24.04)
