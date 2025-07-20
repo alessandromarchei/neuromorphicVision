@@ -1,8 +1,5 @@
 <launch>
-    <!-- previous config file -->
-    <!-- <rosparam file="$(find lis_nv)/config/config.yaml" command="load"/>-->
-    <!-- now moved into /home/sharedData to allow modifications from host -->
-    <rosparam file="/home/sharedData/config/config.yaml" command="load"/>
+    <rosparam file="config/config.yaml" command="load"/>
 
 
     <!-- LAUNCH MAVROS NODE, running at port USB0 at 921600 baud/sec -->

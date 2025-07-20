@@ -1,24 +1,11 @@
-#TIMING PATH Output
-timingFileEnable: true
-
-#altitude path OUTPUT
-altitudeFileEnable: true
-
-imuFileEnable: true
-
-gpsFileEnable: true
 
 #CORNER DETECTOR PARAMETERS
 FAST:
   threshold: 70
   nonmaxSuppression: false
-  randomSampleFilter:
-    enable: false
-    ratio: 0.5
   gradientScoring:
-    enable: false
+    enable: true
     desiredFeatures: 100
-  safeFeatures: true    #if true, use the SOBEL FILTER in case of number of features < desiredFeatures * 0.5
 
 ACCUMULATOR:
   neutralPotential: 0.5
@@ -78,25 +65,14 @@ SMOOTHINGFILTER:
   lpfK: 0.7  #coefficient for the low pass filter. 0.5 is the default value
   complementaryK: 2.3 #coefficient for the complementary filter.
 
-#DOWNSAMPLING
-downsample: true
-
 #altitude parameters
 ALTITUDE:
   type: 0   # 0:average, 1:median
   saturationValue: 45   #in meters, if values over this are computed, than saturate to this
 
 #safety parameters
-lidarMax : 1.5    #in meters. if lidar the lidar detects less than this, publish this value rather than the vision based altitude
+lidarMax : 0.0    #in meters. if lidar the lidar detects less than this, publish this value rather than the vision based altitude
 
 publishAltitudeFrequency: 50  #in Hz. IT MUST BE BETWEEN 30 and 50 Hz
 
 velocitySource : 0 # 0: airspped, 1: groundspeed
-
-
-#GPS TIMEOUT
-gpsTimeout: 1  #in seconds
-
-#EVENTS RANGE CHECK. IF ENABLED, check that EACH EVENT IS WITHIN THE FRAME RESOLUTION OF THE CAMERA
-#ROBUST BUT TAKES A LOT OF EXECUTION TIME
-safeEventsWrite: false

@@ -236,6 +236,11 @@ private:
     int filteredDetectedFeatures = 0;                                              //number of features after the rejection filter
 
 
+    //PARALLEL FAST AND LK
+    bool FASTLKParallel = false;
+     //the thread for FAST, in parallel with LK. IT WILL PRODUCE nextprevPoints, that will be then saved in prevPoints
+    std::thread FASTThread;    
+
 
     void loadParameters();
     void initializeAccumulator();
@@ -245,6 +250,7 @@ private:
     void initializeSlicer();
 
     void processEvents(const dv::EventStore& events, dv::cvector<dv::IMU>& imu);
+    void processEventsParallel(const dv::EventStore& events, dv::cvector<dv::IMU>& imu);
     void applyCornerDetection(const cv::Mat &edgeImage);
     void calculateOpticalFlow(const cv::Mat &currFrame);
     cv::Vec3f avgGyroDataRadSec(dv::cvector<dv::IMU> &imuBatch);
