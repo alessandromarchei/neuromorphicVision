@@ -6,17 +6,13 @@ import cv2
 import os.path as osp
 import torch.utils.data as data
 import multiprocessing
-import time
 import h5py
 import os
-import hdf5plugin # required for import of blosc
-import json
 import torch.nn.functional as F
 from tqdm import tqdm
 
-import torchvision
 
-from utils.event_utils import to_voxel_grid
+from testing.utils.event_utils import to_voxel_grid
 
 
 def load_intrinsics_ecd(path):
@@ -31,7 +27,7 @@ def load_intrinsics_ecd(path):
 def get_ecd_data(tss_imgs_us, evs, intrinsics, rectify_map, DELTA_MS=None, H=180, W=240, return_dict=None):
     print(f"Delta {DELTA_MS} ms")
     data_list = []
-    print("Creating voxel grids")
+    print("Creating event frames")
     print(f"Number of slices : {len(tss_imgs_us)}")
     for (ts_idx, ts_us) in enumerate(tss_imgs_us):
         if ts_idx == len(tss_imgs_us) - 1:
@@ -67,6 +63,7 @@ def read_rmap(rect_file, H=180, W=240):
     rmap = h5py.File(h5file, "r")
     rectify_map = np.array(rmap["rectify_map"])  # (H, W, 2)
     assert rectify_map.shape == (H, W, 2)
+    print(f"Loaded rectify map from {h5file} with shape {rectify_map.shape}")
     rmap.close()
     return rectify_map
 
@@ -84,13 +81,28 @@ def split_evs_list_by_tss_split(evs, tss_imgs_us_split):
 
 
 
-def fpv_evs_iterator(scenedir, stride=1, dT_ms=None, H=260, W=346, parallel=False, cors=4, tss_gt_us=None):
+def fpv_evs_iterator(scenedir, stride=1, dT_ms=None, H=260, W=346, parallel=True, cors=4, tss_gt_us=None):
+
+    print(f"Loading FPV-UZH events from {scenedir}")
+
 
     evs_file = glob.glob(osp.join(scenedir, "events.txt"))
     assert len(evs_file) == 1
+    print(f"Loading events from {evs_file[0]}")
 
-    print(f"Loading events from .txt file")
-    evs = np.asarray(np.loadtxt(evs_file[0], delimiter=" ")) # (N, 4) with [ts_sec, x, y, p]
+    #check existance of pre-saved .npy file
+    if os.path.exists(osp.join(scenedir, "events.npy")):
+        print(f"Found pre-saved events.npy file, loading from it for faster loading")
+        evs = np.load(osp.join(scenedir, "events.npy"))
+    else:
+        print(f"No pre-saved events.npy file found, loading from txt file")
+        evs = np.asarray(np.loadtxt(evs_file[0], delimiter=" ")) # (N, 4) with [ts_sec, x, y, p]
+
+        #save the events in .npy for faster loading next time, only if the file is not already present
+        np.save(osp.join(scenedir, "events.npy"), evs)
+        print(f"Saved events to {osp.join(scenedir, 'events.npy')} for faster loading next time")
+
+    
     evs[:, 0] = evs[:, 0] * 1e6
     print(f"Loading events done")
 
@@ -99,6 +111,7 @@ def fpv_evs_iterator(scenedir, stride=1, dT_ms=None, H=260, W=346, parallel=Fals
 
     rect_file = osp.join(scenedir, "rectify_map.h5")
     rectify_map = read_rmap(rect_file, H=H, W=W)
+
 
     intrinsics = load_intrinsics_ecd(scenedir)
     fx, fy, cx, cy = intrinsics 
@@ -123,28 +136,37 @@ def fpv_evs_iterator(scenedir, stride=1, dT_ms=None, H=260, W=346, parallel=Fals
     tss_imgs_us = tss_imgs_us[imstart:imstop:stride]
 
     if parallel:
+        print("Using parallel loading of event frames")
         tss_imgs_us_split = np.array_split(tss_imgs_us, cors)
+
+        print(f"Splitting {len(tss_imgs_us)} timestamps into {cors} processes")
         evs_split = split_evs_list_by_tss_split(evs, tss_imgs_us_split)
 
+        print("Starting multi-thread processing")
         processes = []
         return_dict = multiprocessing.Manager().dict()      
         for i in range(cors):
             p = multiprocessing.Process(target=get_ecd_data, args=(tss_imgs_us_split[i].tolist(), evs_split[i], intrinsics, rectify_map, dT_ms, H, W, return_dict))
             p.start()
             processes.append(p)
-            
+        
+        print("Waiting for processes to finish")
         for p in processes:
             p.join()
 
+        print("Combining results from all processes")
         keys = np.array(return_dict.keys())
         order = np.argsort(keys)
         data_list = []
+        print("Merging data in correct order")
         for k in keys[order]:
             data_list.extend(return_dict[k])
     else:
+        print("Using sequential loading of event frames")
         data_list = get_ecd_data(tss_imgs_us, evs, intrinsics, rectify_map, dT_ms, H, W)
 
     print(f"Preloaded {len(data_list)} FPV-UZH voxels, imstart={imstart}, imstop={imstop}, stride={stride}, dT_ms={dT_ms} on {scenedir}")
 
     for (voxel, intrinsics, ts_us) in data_list:
+        print(f"Yielding voxel at time {ts_us} us with shape {voxel.shape}")
         yield voxel.cpu(), intrinsics.cpu(), ts_us

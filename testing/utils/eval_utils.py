@@ -1,138 +1,23 @@
 
 import os
 import torch
-from devo.devo import DEVO
-from devo.utils import Timer
 from pathlib import Path
-import datetime
-import numpy as np
 import yaml
-import glob
 import copy
-import math
 import shutil
 from scipy.spatial.transform import Rotation as R
 from tabulate import tabulate
 
-from devo.plot_utils import plot_trajectory, fig_trajectory
-from devo.plot_utils import save_trajectory_tum_format
-
-
 from tqdm import tqdm
 
-import torchvision
-from utils.load_utils import change_intrinsics_resize
-
 @torch.no_grad()
-def run_voxel(voxeldir, cfg, network, viz=False, iterator=None, timing=False, H=480, W=640, viz_flow=False, scale=1.0, model="DEVO",use_pyramid=True, **kwargs): 
-    
-    print(f"use_pyramid: {use_pyramid}")
-
-    slam = DEVO(cfg, network, evs=True, ht=H, wd=W, viz=False, viz_flow=viz_flow, model=model, pyramid=use_pyramid, **kwargs)
+def run_voxel(voxeldir, viz=False, iterator=None, H=260, W=346): 
     
     for i, (voxel, intrinsics, t) in enumerate(tqdm(iterator)):
-        if timing and i == 0:
-            t0 = torch.cuda.Event(enable_timing=True)
-            t1 = torch.cuda.Event(enable_timing=True)
-            t0.record()
+        #each iterator is a voxel grid
+        print(f"Processing voxel grid {i} at time {t} us with shape {voxel.shape}")
 
-        if viz: 
-            # import matplotlib.pyplot as plt
-            # plt.switch_backend('Qt5Agg')
-            visualize_voxel(voxel.detach().cpu(), save=True, index=i)
-        
-        with Timer("DEVO", enabled=timing):
-            slam(t, voxel, intrinsics, scale=scale)
-
-    for _ in range(12):
-        slam.update()
-
-    poses, tstamps, max_nedges = slam.terminate()
-
-    if timing:
-        t1.record()
-        torch.cuda.synchronize()
-        dt = t0.elapsed_time(t1)/1e3
-        print(f"{voxeldir}\nDEVO Network {i+1} frames in {dt} sec, e.g. {(i+1)/dt} FPS")
-    
-    flowdata = slam.flow_data if viz_flow else None
-    return poses, tstamps, flowdata, max_nedges
-
-
-
-@torch.no_grad()
-def run_voxel_advanced(voxeldir, cfg, network, viz=False, iterator=None, timing=False, H=480, W=640, viz_flow=False, scale=1.0, **kwargs): 
-    
-    if kwargs.get("devo_debug", False):
-        from devo.devo_debug import DEVO
-    else:
-        from devo.devo import DEVO
-
-    skip_start = kwargs.get("skip_start", 0)
-    skip_end = kwargs.get("skip_end", 0)
-
-    print(f"Voxel dir : {voxeldir}")
-    skip_start, skip_end = get_skip_ranges(voxeldir, skip_start, skip_end)
-
-    data_list = list(iterator)
-    total_len = len(data_list)
-    print(f"Total frames in iterator: {total_len}, skipping first {skip_start} and last {skip_end} frames")
-
-    binning_factor = kwargs.get("binning", 1)
-    if binning_factor != 1:
-        old_H, old_W = H, W
-        H, W = H // binning_factor, W // binning_factor
-        H = int(math.floor(H/4)*4)
-        W = int(math.floor(W/4)*4)
-        resize = torchvision.transforms.Resize((H,  W))
-
-    slam = DEVO(cfg, network, evs=True, ht=H, wd=W, viz=False, viz_flow=viz_flow, **kwargs)
-
-    # store per-frame inference times
-    frame_times = []
-
-    for i, (voxel, intrinsics, t) in enumerate(tqdm(data_list)):
-        if i < skip_start or i >= (total_len - skip_end):
-            continue
-
-        if binning_factor != 1:
-            voxel = resize(voxel)
-            intrinsics = change_intrinsics_resize(intrinsics, H, W, H_orig=old_H, W_orig=old_W)
-            intrinsics = torch.tensor(intrinsics, dtype=torch.float32, device="cuda")
-
-        if timing:
-            t_start = torch.cuda.Event(enable_timing=True)
-            t_end = torch.cuda.Event(enable_timing=True)
-            t_start.record()
-
-        with Timer("DEVO", enabled=timing):
-            slam(t, voxel, intrinsics, scale=scale)
-
-        if timing:
-            t_end.record()
-            torch.cuda.synchronize()
-            elapsed = t_start.elapsed_time(t_end) / 1e3  # seconds
-            frame_times.append(elapsed)
-
-    for _ in range(12):
-        slam.update()
-
-    poses, tstamps, max_nedges = slam.terminate()
-
-    if timing and frame_times:
-        total_time = sum(frame_times)
-        avg_time = total_time / len(frame_times)
-        avg_fps = 1.0 / avg_time if avg_time > 0 else 0
-        print(f"\n{voxeldir}")
-        print(f"Processed {len(frame_times)} frames")
-        print(f"Total time: {total_time:.3f} s")
-        print(f"Average per-frame time: {avg_time:.4f} s ({avg_fps:.2f} FPS)")
-
-    flowdata = slam.flow_data if viz_flow else None
-    return poses, tstamps, flowdata, max_nedges
-
-
-
+    return voxel
 
 
 @torch.no_grad()            
@@ -284,49 +169,3 @@ def log_results(data, hyperparam, all_results, results_dict_scene, figures,
     print(f"Results for {dataset_name} {scene_name} Trial #{trial+1} {res_str}")
 
     return all_results, results_dict_scene, figures, outfolder
-
-
-
-@torch.no_grad()
-def write_raw_results(all_results, outfolder):
-    # all_results: list of all raw_results
-    os.makedirs(os.path.join(f"{outfolder}/../raw_results"), exist_ok=True)
-    with open(os.path.join(f"{outfolder}/../raw_results", datetime.datetime.now().strftime('%m-%d-%I%p.txt')), "w") as f:
-        f.write(','.join([str(x) for x in all_results]))
-
-@torch.no_grad()
-def compute_median_results(results, all_results, dataset_name, outfolder=None):
-    # results: dict of (scene, list of results)
-    # all_results: list of all raw_results
-        
-    results_dict = dict([(f"{dataset_name}/{k}", np.median(v)) for (k, v) in results.items()])
-    results_dict["AUC"] = np.maximum(1 - np.array(all_results), 0).mean()
-
-    xs = []
-    for scene in results:
-        x = np.median(results[scene])
-        xs.append(x)
-    results_dict["AVG"] = np.mean(xs) / 100.0 # cm -> m
-
-    if outfolder is not None:
-        with open(os.path.join(f"{outfolder}/../results_dict_latex_{datetime.datetime.now().strftime('%m-%d-%I%p.txt')}"), 'w') as f:
-            k0 = list(results.keys())[0]
-            num_runs = len(results[k0])
-            f.write(' & '.join([str(k) for k in results.keys()]))
-            f.write('\n')
-
- 
-            for i in range(num_runs):
-                print(f"{[str(v[i]) for v in results.values()]}")
-                f.write(' & '.join([str(v[i]) for v in results.values()]))
-                f.write('\n')
-
-            f.write(f"Medians\n")
-            for i in range(num_runs):
-                print(f"{[str(v[i]) for v in results.values()]}")
-                f.write(' & '.join([str(np.median(v)) for v in results.values()]))
-                f.write('\n')
-
-            f.write('\n\n')
-
-    return results_dict

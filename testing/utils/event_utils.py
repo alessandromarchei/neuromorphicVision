@@ -1,9 +1,6 @@
 import numpy as np
-
-
 import math
 from typing import Dict, Tuple
-
 import h5py
 import numpy as np
 from numba import jit
@@ -11,7 +8,6 @@ import torch
 
 from torch import cuda
 
-# from https://github.com/uzh-rpg/DSEC/blob/main/scripts/utils/eventslicer.py
 class EventSlicer:
     def __init__(self, h5f: h5py.File):
         self.h5f = h5f
@@ -219,6 +215,117 @@ def to_event_stack(xs, ys, ts, ps, H=480, W=640, nb_of_time_bins=5, device='cpu'
 
     voxel_grid = voxel_grid_flat.view(nb_of_time_bins, H, W)
     return voxel_grid
+
+# def to_event_frame(xs, ys, ts, ps, H=480, W=640, ignore_pol=False, event_contribution=0.25, neutral_potential=0.5, device='cpu'):
+#     """Returns fast, vectorized event frame: shape (1, H, W)
+#     If ignore_pol is True, all events contribute positively.
+#     Event contribution is the weight of each event in the frame.
+#     Output image is originally of type cv mat (uint8), namely CV_8UC1.
+#     Neutral potential is the value assigned to pixels with no events, i.e. 0.5 for CV_8UC1 (128).
+#     """
+    
+#     if cuda.is_available():
+#         device = 'cuda'
+#     else:
+#         device = 'cpu'
+
+#     if len(ts) == 0:
+#         return torch.zeros(1, H, W, dtype=torch.uint8, device=device)
+
+#     ps = ps.astype(np.int8)
+#     ps[ps == 0] = -1
+
+#     duration = ts[-1] - ts[0]
+#     if duration == 0:
+#         return torch.zeros(1, H, W, dtype=torch.uint8, device=device)
+
+#     xs = np.clip(xs, 0, W - 1).astype(np.int32)
+#     ys = np.clip(ys, 0, H - 1).astype(np.int32)
+
+#     # Convert to torch tensors
+#     bin_indices = torch.from_numpy(bin_indices).to(device)
+#     xs = torch.from_numpy(xs).to(device)
+#     ys = torch.from_numpy(ys).to(device)
+#     ps = torch.from_numpy(ps).to(device).float()
+
+#     # Flattened index for the 3D tensor
+#     linear_idx = bin_indices * (H * W) + ys * W + xs
+
+#     # Create the flattened voxel grid and accumulate using index_add_
+#     voxel_grid_flat = torch.zeros(1 * H * W, dtype=torch.float32, device=device)
+#     voxel_grid_flat.index_add_(0, linear_idx, ps)
+
+#     voxel_grid = voxel_grid_flat.view(1, H, W)
+#     return voxel_grid
+
+import torch
+
+@torch.no_grad()
+def to_event_frame(
+    xs: torch.Tensor,
+    ys: torch.Tensor,
+    ps: torch.Tensor,
+    H: int = 480,
+    W: int = 640,
+    ignore_pol: bool = False,
+    event_contribution: float = 0.25,
+    neutral_potential: float = 0.5,
+    min_potential: float = 0.0,
+    max_potential: float = 1.0,
+    device: str = "cpu",
+):
+    """
+    Vectorized event-frame accumulator (EdgeMapAccumulator-like).
+
+    Args:
+        xs, ys: int32 tensors of coordinates (same length)
+        ps: polarity tensor (0/1 or ±1)
+        H, W: image height and width
+        ignore_pol: if True, treat all events as positive
+        event_contribution: per-event intensity delta in [0,1]
+        neutral_potential: baseline brightness for empty pixels
+        min_potential, max_potential: clamping limits
+        device: "cpu" or "cuda"
+
+    Returns:
+        frame (1, H, W) tensor, float32 ∈ [0,1]
+    """
+    # Ensure tensors on device and proper dtype
+    xs = xs.to(device, torch.int32)
+    ys = ys.to(device, torch.int32)
+    ps = ps.to(device, torch.float32)
+
+    # Clamp coordinates inside frame
+    xs = torch.clamp(xs, 0, W - 1)
+    ys = torch.clamp(ys, 0, H - 1)
+
+    # Convert polarity to ±1
+    if ps.max() <= 1.0 and ps.min() >= 0.0:
+        ps = ps * 2.0 - 1.0  # map {0,1} → {-1,+1}
+
+    # Apply polarity rule
+    if ignore_pol:
+        ps = ps.abs()
+
+    # Create flat accumulation buffer
+    frame = torch.full((H * W,), neutral_potential, dtype=torch.float32, device=device)
+
+    # Linearized pixel indices
+    lin_idx = ys * W + xs
+
+    # Accumulate with atomic add (vectorized scatter)
+    contrib = ps * event_contribution
+    frame.index_add_(0, lin_idx, contrib)
+
+    # Clamp to valid range
+    frame.clamp_(min_potential, max_potential)
+
+    # Reshape into image
+    frame = frame.view(1, H, W)
+
+    return frame
+
+
 
 
 def to_voxel_grid(xs, ys, ts, ps, H=480, W=640, nb_of_time_bins=5, remapping_maps=None):
