@@ -258,72 +258,56 @@ def to_event_stack(xs, ys, ts, ps, H=480, W=640, nb_of_time_bins=5, device='cpu'
 #     voxel_grid = voxel_grid_flat.view(1, H, W)
 #     return voxel_grid
 
-import torch
-
-@torch.no_grad()
-def to_event_frame(
-    xs: torch.Tensor,
-    ys: torch.Tensor,
-    ps: torch.Tensor,
-    H: int = 480,
-    W: int = 640,
-    ignore_pol: bool = False,
-    event_contribution: float = 0.25,
-    neutral_potential: float = 0.5,
-    min_potential: float = 0.0,
-    max_potential: float = 1.0,
-    device: str = "cpu",
-):
+def to_event_frame(xs, ys, ps,
+                   H=260, W=346,
+                   ignore_pol=False,
+                   event_contribution=0.35,
+                   neutral_potential=0.5,
+                   min_potential=0.0,
+                   max_potential=1.0):
     """
-    Vectorized event-frame accumulator (EdgeMapAccumulator-like).
-
-    Args:
-        xs, ys: int32 tensors of coordinates (same length)
-        ps: polarity tensor (0/1 or ±1)
-        H, W: image height and width
-        ignore_pol: if True, treat all events as positive
-        event_contribution: per-event intensity delta in [0,1]
-        neutral_potential: baseline brightness for empty pixels
-        min_potential, max_potential: clamping limits
-        device: "cpu" or "cuda"
-
-    Returns:
-        frame (1, H, W) tensor, float32 ∈ [0,1]
+    Event-frame accumulator consistent with voxel-grid logic:
+    - mask out-of-frame events (no clipping)
+    - accumulate contributions in integer 8-bit buffer
+    - produce CV_8UC1 output
     """
-    # Ensure tensors on device and proper dtype
-    xs = xs.to(device, torch.int32)
-    ys = ys.to(device, torch.int32)
-    ps = ps.to(device, torch.float32)
 
-    # Clamp coordinates inside frame
-    xs = torch.clamp(xs, 0, W - 1)
-    ys = torch.clamp(ys, 0, H - 1)
+    # Convert to proper integer arrays
+    xs = xs.astype(np.int32, copy=False)
+    ys = ys.astype(np.int32, copy=False)
 
-    # Convert polarity to ±1
-    if ps.max() <= 1.0 and ps.min() >= 0.0:
-        ps = ps * 2.0 - 1.0  # map {0,1} → {-1,+1}
-
-    # Apply polarity rule
+    # polarity handling (same convention used elsewhere)
     if ignore_pol:
-        ps = ps.abs()
+        ps = np.ones_like(ps, dtype=np.int8)
+    else:
+        if ps.max() <= 1 and ps.min() >= 0:
+            ps = ps * 2 - 1
+        ps = ps.astype(np.int8, copy=False)
 
-    # Create flat accumulation buffer
-    frame = torch.full((H * W,), neutral_potential, dtype=torch.float32, device=device)
+    # --- Mask out-of-frame events (SAME policy as voxel_grid) ---
+    valid = (xs >= 0) & (xs < W) & (ys >= 0) & (ys < H)
+    if not np.any(valid):
+        return np.full((H, W), int(round(neutral_potential * 255)), np.uint8)
+    xs, ys, ps = xs[valid], ys[valid], ps[valid]
 
-    # Linearized pixel indices
+    # --- Integer scaling parameters ---
+    contrib_int = int(round(event_contribution * 255))
+    neutral_val = int(round(neutral_potential * 255))
+    min_val     = int(round(min_potential * 255))
+    max_val     = int(round(max_potential * 255))
+
+    # --- Accumulate using bincount (vectorized, same as before) ---
+    frame_flat = np.full(H * W, neutral_val, np.int32)
     lin_idx = ys * W + xs
+    frame_flat += np.bincount(
+        lin_idx,
+        weights=ps.astype(np.int32) * contrib_int,
+        minlength=H * W
+    ).astype(np.int32)
 
-    # Accumulate with atomic add (vectorized scatter)
-    contrib = ps * event_contribution
-    frame.index_add_(0, lin_idx, contrib)
-
-    # Clamp to valid range
-    frame.clamp_(min_potential, max_potential)
-
-    # Reshape into image
-    frame = frame.view(1, H, W)
-
-    return frame
+    # --- Clamp and reshape ---
+    np.clip(frame_flat, min_val, max_val, out=frame_flat)
+    return frame_flat.reshape(H, W).astype(np.uint8)
 
 
 

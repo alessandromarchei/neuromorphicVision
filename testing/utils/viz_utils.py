@@ -5,48 +5,45 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-def visualize_event_frame(event_frame, use_cv2=True, wait=0):
+
+def visualize_event_frame(event_frame, use_cv2=True, wait=0, window_name="Event Frame"):
     """
-    Visualize a single event frame where:
-      positive values = ON events (red)
-      negative values = OFF events (blue)
-      zero = background (black)
-    
+    Visualize a single event frame (CV_8UC1-style grayscale).
+
     Args:
-        event_frame (torch.Tensor): 2D tensor (H, W) with positive/negative events
-        use_cv2 (bool): if True → show via OpenCV (fast), else matplotlib
+        event_frame: torch.Tensor | np.ndarray, shape (H, W)
+        use_cv2 (bool): if True, display with OpenCV (fast); else use matplotlib
         wait (int): delay in ms for cv2.waitKey()
+        window_name (str): optional window title
     """
 
-    if not torch.is_tensor(event_frame):
-        raise TypeError("Input must be a torch.Tensor")
+    # Convert torch → numpy if needed
+    if torch.is_tensor(event_frame):
+        img = event_frame.detach().cpu().numpy()
+    elif isinstance(event_frame, np.ndarray):
+        img = event_frame
+    else:
+        raise TypeError("Input must be a torch.Tensor or np.ndarray")
 
-    # Move to CPU and convert to numpy
-    img = event_frame.detach().cpu().numpy()
+    # Ensure 2D grayscale
+    if img.ndim != 2:
+        raise ValueError(f"Expected 2D image, got shape {img.shape}")
 
-    # Normalize to [-1, 1]
-    if np.max(np.abs(img)) > 0:
-        img = img / np.max(np.abs(img))
-
-    # Create RGB image
-    h, w = img.shape
-    rgb = np.zeros((h, w, 3), dtype=np.float32)
-
-    # Positive → red, Negative → blue
-    rgb[img > 0, 0] = img[img > 0]       # R channel
-    rgb[img < 0, 2] = -img[img < 0]      # B channel
-
-    # Convert to uint8 [0,255]
-    rgb_uint8 = (rgb * 255).astype(np.uint8)
+    # Convert to uint8 if needed
+    if img.dtype != np.uint8:
+        img = np.clip(img, 0, 255).astype(np.uint8)
 
     if use_cv2:
-        cv2.imshow("Event Frame", cv2.cvtColor(rgb_uint8, cv2.COLOR_RGB2BGR))
-        cv2.waitKey(wait)
+        # OpenCV expects BGR but for grayscale we just pass single channel
+        cv2.imshow(window_name, img)
+        key = cv2.waitKey(wait)
+        if key == 27:  # Esc to close
+            cv2.destroyWindow(window_name)
     else:
-        plt.imshow(rgb)
+        plt.imshow(img, cmap="gray", vmin=0, vmax=255)
         plt.axis("off")
+        plt.title(window_name)
         plt.show()
-
 
 def show_image(image, t=0):
     image = image.permute(1, 2, 0).cpu().numpy()
