@@ -10,7 +10,7 @@ import h5py
 import os
 import torch.nn.functional as F
 from tqdm import tqdm
-
+import bisect
 
 from testing.utils.event_utils import to_voxel_grid, to_event_frame
 
@@ -81,9 +81,7 @@ def read_rmap(rect_file, H=180, W=240):
 #         yield voxel.cuda(), intrinsics.cuda(), ts_us
 
 
-
-def mvsec_evs_iterator(scenedir, side="left", dT_ms=None, H=260, W=346,
-                       use_event_stack=False, timing=False):
+def mvsec_evs_iterator(scenedir, side="left", dT_ms=None, H=260, W=346):
 
     print(f"[MVSEC] Loading MVSEC events from {scenedir}")
 
@@ -95,10 +93,10 @@ def mvsec_evs_iterator(scenedir, side="left", dT_ms=None, H=260, W=346,
     datain = h5py.File(h5in[0], 'r')
 
     # All raw events
-    all_evs = datain["davis"][side]["events"][:]  
-    # Format is (x, y, t_us, pol)
+    all_evs = datain["davis"][side]["events"][:]
+    # (x, y, t_seconds, polarity)
 
-    # Image timestamps (used when dT_ms=None)
+    # Image timestamps (when dT_ms = None)
     tss_imgs_us = sorted(np.loadtxt(os.path.join(scenedir, f"tss_imgs_us_{side}.txt")))
     num_imgs = len(tss_imgs_us)
 
@@ -106,123 +104,151 @@ def mvsec_evs_iterator(scenedir, side="left", dT_ms=None, H=260, W=346,
     rect_file = osp.join(scenedir, f"rectify_map_{side}.h5")
     rectify_map = read_rmap(rect_file, H=H, W=W)
 
-    # Mapping from image index → event index (used when dt=None)
-    event_idxs = datain["davis"][side]["image_raw_event_inds"]
+    #print dataset contents
+    print(f"[MVSEC] Available datasets in HDF5 file: {list(datain['davis'][side].keys())}")
+
+    # MVSEC mapping (when dt=None)
+    event_idxs = datain["davis"][side]["image_raw_event_inds"][:]
 
     datain.close()
 
     # =====================================================================================
-    # CASE 1: dT_ms = None → USE ORIGINAL MVSEC IMAGE-BASED SLICING 
+    # CASE 1 — Default MVSEC slicing
     # =====================================================================================
     if dT_ms is None:
-        print("[MVSEC] Using default MVSEC slicing (one event frame per image timestamp).")
+        print("[MVSEC] Using default MVSEC slicing")
 
         evidx_left = 0
 
         for img_i in range(num_imgs):
             evid_next = event_idxs[img_i]
-
-            # Slice events between image i and i+1
             batch = all_evs[evidx_left:evid_next]
             evidx_left = evid_next
 
             if batch.shape[0] == 0:
                 continue
 
-            # Rectification
             rect = rectify_map[
                 batch[:, 1].astype(np.int32),
                 batch[:, 0].astype(np.int32)
             ]
 
-            event_frame = to_event_frame(rect[..., 0], rect[..., 1],
-                                      batch[:, 2], batch[:, 3],
-                                      H=H, W=W)
-            
+            event_frame = to_event_frame(
+                rect[..., 0], rect[..., 1],
+                batch[:, 3],
+                H=H, W=W
+            )
+
             yield event_frame, tss_imgs_us[img_i]
 
         return
 
-    # =====================================================================================
-    # CASE 2: dT_ms SPECIFIED → TIME-BASED SLICING LIKE FPV
-    # =====================================================================================
-    print(f"[MVSEC] Using temporal slicing: dT_ms={dT_ms}")
+    # ===========================================================
+    # CASE 2 — FAST TEMPORAL SLICING (NO WHILE LOOP, O(log N))
+    # ===========================================================
+    print(f"[MVSEC] Using FAST temporal slicing: dT_ms={dT_ms}")
 
-    ts = all_evs[:, 2].astype(np.int64)
+    ts_seconds = all_evs[:, 2].astype(np.float64)
+    ts_us = (ts_seconds * 1e6).astype(np.int64)
+
     dt_us = int(dT_ms * 1000)
 
-    ts_start = ts[0]
-    ts_end   = ts[-1]
+    ts_start = ts_us[0]
+    ts_end   = ts_us[-1]
 
-    # Uniform timestamps every dt_us
+    # Uniform slicing grid
     t0_list = np.arange(ts_start, ts_end, dt_us)
 
-    ev_index = 0
-    N = all_evs.shape[0]
+    ev_index_start = 0
+    N = len(ts_us)
 
     for t0 in t0_list:
         t1 = t0 + dt_us
 
-        # Move ev_index to first event >= t0
-        while ev_index < N and ts[ev_index] < t0:
-            ev_index += 1
-        start = ev_index
+        # ---------------------------------------------
+        # FAST BINARY SEARCH — FIRST EVENT >= t0
+        # ---------------------------------------------
+        start = np.searchsorted(ts_us, t0, side="left")
 
-        # Move forward until events reach t1
-        while ev_index < N and ts[ev_index] < t1:
-            ev_index += 1
-        end = ev_index
+        # FAST BINARY SEARCH — FIRST EVENT >= t1
+        end   = np.searchsorted(ts_us, t1, side="left")
 
-        batch = all_evs[start:end]
-        if batch.shape[0] == 0:
+        if end <= start:
             continue
 
-        # Rectification
+        batch = all_evs[start:end]
+
+        # rectification
         rect = rectify_map[
             batch[:, 1].astype(np.int32),
             batch[:, 0].astype(np.int32)
         ]
 
-        # Event frame
-        event_frame = to_event_frame(rect[..., 0], rect[..., 1],
-                                    batch[:, 2], batch[:, 3],
-                                    H=H, W=W)
+        event_frame = to_event_frame(
+            rect[..., 0], rect[..., 1],
+            batch[:, 3],
+            H=H, W=W
+        )
 
         yield event_frame, t0
 
 
+def mvsec_evs_iterator_adaptive(scenedir, side="left", H=260, W=346, dt_function=None):
+    """
+    dt_function(t0, iteration) deve restituire il dt_ms da usare in questa finestra.
+    """
+    print(f"[MVSEC] Adaptive slicing enabled")
 
-def mvsec_evs_loader(scenedir, side="left", stride=1, H=260, W=346):
-    intrinsics = np.loadtxt(os.path.join(scenedir, f"calib_undist_{side}.txt"))
-    fx, fy, cx, cy = intrinsics
-    intrinsics = torch.from_numpy(np.array([fx, fy, cx, cy]))
-
+    # load files
     h5in = glob.glob(os.path.join(scenedir, f"*_data.hdf5"))
-    assert len(h5in) == 1
     datain = h5py.File(h5in[0], 'r')
 
-    num_imgs = datain["davis"][side]["image_raw"].shape[0]
-    tss_imgs_us = sorted(np.loadtxt(os.path.join(scenedir, f"tss_imgs_us_{side}.txt")))
-    assert num_imgs == len(tss_imgs_us)
-
-    rect_file = osp.join(scenedir, f"rectify_map_{side}.h5")
-    rectify_map = read_rmap(rect_file, H=H, W=W)
-
-    event_idxs = datain["davis"][side]["image_raw_event_inds"]
-    all_evs = datain["davis"][side]["events"][:]
-    evidx_left = 0
-    data_list = []
-    for img_i in range(num_imgs):       
-        evid_nextimg = event_idxs[img_i]
-        evs_batch = all_evs[evidx_left:evid_nextimg][:]
-        evidx_left = evid_nextimg
-        rect = rectify_map[evs_batch[:, 1].astype(np.int32), evs_batch[:, 0].astype(np.int32)]
-
-        voxel = to_voxel_grid(rect[..., 0], rect[..., 1], evs_batch[:, 2], evs_batch[:, 3], H=H, W=W, nb_of_time_bins=5)
-        data_list.append((voxel, intrinsics, tss_imgs_us[img_i]))
+    all_evs = datain["davis"][side]["events"][:]      # (x, y, t_sec, pol)
+    rectify_map = read_rmap(os.path.join(scenedir, f"rectify_map_{side}.h5"), H=H, W=W)
 
     datain.close()
 
-    print(f"Preloaded {len(data_list)} MVSEC-voxels, imstart={0}, imstop={-1}, stride={1} on {scenedir}")
+    # timestamps in microseconds
+    ts_sec = all_evs[:, 2].astype(np.float64)
+    ts_us  = (ts_sec * 1e6).astype(np.int64)
 
-    return data_list
+    # starting point
+    t0 = ts_us[0]
+    ts_end = ts_us[-1]
+
+    iteration = 0
+
+    while t0 < ts_end:
+
+        # --------------------------------------------
+        # DT VARIABILE AD OGNI ITERAZIONE
+        # --------------------------------------------
+        dt_ms = dt_function(t0, iteration)          # restituisce un dt diverso
+        dt_us = int(dt_ms * 1000)
+        t1 = t0 + dt_us
+
+        # --------------------------------------------
+        # FAST slicing (two binary searches, O(logN))
+        # --------------------------------------------
+        start = np.searchsorted(ts_us, t0, side="left")
+        end   = np.searchsorted(ts_us, t1, side="left")
+
+        if end > start:
+            batch = all_evs[start:end]
+
+            rect = rectify_map[
+                batch[:, 1].astype(np.int32),
+                batch[:, 0].astype(np.int32)
+            ]
+
+            event_frame = to_event_frame(
+                rect[..., 0], rect[..., 1],
+                batch[:, 3],
+                H=H, W=W
+            )
+
+            yield event_frame, t0, dt_ms
+
+        # Avanza la finestra
+        t0 = t1
+        iteration += 1
