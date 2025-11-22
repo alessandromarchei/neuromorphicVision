@@ -3,6 +3,12 @@
 import math
 import numpy as np
 
+# funzioni di utilità per l'OF (uguali al tuo script a frame)
+from functions import (
+    compute_a_vector_meter,
+    compute_direction_vector,
+)
+
 ###############################################################################
 # Python translation of structs, constants, or free functions from defs.hpp
 ###############################################################################
@@ -120,3 +126,99 @@ class LKParams:
 
 # If there are other global constants, define them here
 MAX_FPS_FLIR = 60.0
+
+
+
+class OFVectorFrame:
+    """
+    Python equivalent of your C++ struct OFVectorFrame.
+    """
+    def __init__(self, p1, p2, fps, camParams):
+        self.position = p1
+        self.nextPosition = p2
+        self.deltaX = p2[0] - p1[0]
+        self.deltaY = p2[1] - p1[1]
+        self.uPixelSec = self.deltaX * fps
+        self.vPixelSec = self.deltaY * fps
+        self.magnitudePixel = math.sqrt(self.deltaX**2 + self.deltaY**2)
+
+        self.uDegSec = (self.uPixelSec / camParams.fx) * (180.0 / np.pi)
+        self.vDegSec = (self.vPixelSec / camParams.fy) * (180.0 / np.pi)
+        self.AMeter = compute_a_vector_meter(self.position, camParams)
+        self.directionVector = compute_direction_vector(self.position, camParams)
+        self.P = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+
+
+# ============================================================
+# PID per Adaptive Slicing (versione Python del tuo C++)
+# ============================================================
+
+class AdaptiveSlicerPID:
+    def __init__(self, cfg: dict, enabled: bool):
+        self.enabled = enabled                     # <--- DIPENDE DA SLICING.type!
+
+        slicer_cfg = cfg["SLICING"]
+        self.initial_dt_ms = 1000.0 / slicer_cfg.get("fps", 50)   # dt iniziale
+
+        ad = cfg["adaptiveSlicing"]
+
+        self.P = ad.get("P", 0.5)
+        self.I = ad.get("I", 0.05)
+        self.D = ad.get("D", 0.0)
+
+        self.maxTimingWindow = ad.get("maxTimingWindow", 25)
+        self.minTimingWindow = ad.get("minTimingWindow", 15)
+        self.adaptiveTimingWindowStep = ad.get("adaptiveTimingWindowStep", 1)
+        self.thresholdPIDEvents = ad.get("thresholdPIDEvents", 10)
+        self.OFPixelSetpoint = ad.get("OFPixelSetpoint", 7)
+
+        # stato interno
+        self.adaptiveTimeWindow = self.initial_dt_ms
+        self.integralError = 0.0
+        self.previousError = 0.0
+        self.PIDoutput = 0.0
+
+    def get_current_dt_ms(self):
+        return self.adaptiveTimeWindow
+
+    def update(self, filteredFlowVectors):
+        if not self.enabled:
+            return self.adaptiveTimeWindow, False
+        if len(filteredFlowVectors) == 0:
+            return self.adaptiveTimeWindow, False
+
+        magnitude = sum(
+            math.sqrt(v.deltaX**2 + v.deltaY**2) for v in filteredFlowVectors
+        ) / len(filteredFlowVectors)
+
+        error = self.OFPixelSetpoint - magnitude
+        self.integralError += error
+        derivative = error - self.previousError
+
+        self.PIDoutput = (
+            self.P * error +
+            self.I * self.integralError +
+            self.D * derivative
+        )
+
+        updateTimingWindow = False
+
+        if abs(self.PIDoutput) > self.thresholdPIDEvents:
+            if self.PIDoutput > 0 and self.adaptiveTimeWindow < self.maxTimingWindow:
+                self.adaptiveTimeWindow += self.adaptiveTimingWindowStep
+                updateTimingWindow = True
+            elif self.PIDoutput < 0 and self.adaptiveTimeWindow > self.minTimingWindow:
+                self.adaptiveTimeWindow -= self.adaptiveTimingWindowStep
+                updateTimingWindow = True
+
+            self.adaptiveTimeWindow = np.clip(
+                self.adaptiveTimeWindow,
+                self.minTimingWindow,
+                self.maxTimingWindow
+            )
+            self.integralError = 0.0
+            self.PIDoutput = 0.0
+
+        self.previousError = error
+        return self.adaptiveTimeWindow, updateTimingWindow
+

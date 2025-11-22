@@ -22,8 +22,9 @@ ACCUMULATOR:
   decay: 1.0
   ignorePolarity: true
 
-SLICER:
-  fps: 50 #intial value: slicing at 20 ms
+SLICING:
+  type: "fixed"    # "mvsec" | "fixed" | "adaptive"
+  dt_ms: 10        # used only if type == "fixed"
 
 
 CAMERA:

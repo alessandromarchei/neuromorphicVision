@@ -15,12 +15,16 @@ import cv2
 # iterator + util già esistenti (tuoi)
 from testing.utils.load_utils_mvsec import mvsec_evs_iterator, read_rmap
 from testing.utils.event_utils import to_event_frame
+from testing.utils.visualize import visualize_image, visualize_gt_flow
+
 
 # strutture dati e parametri (come nel tuo script a frame)
 from defs import (
     FastParams,
     CameraParams,
     LKParams,
+    AdaptiveSlicerPID,
+    OFVectorFrame
 )
 
 # funzioni di utilità per l'OF (uguali al tuo script a frame)
@@ -32,124 +36,6 @@ from functions import (
     compute_a_vector_meter,
     compute_direction_vector,
 )
-
-
-# ============================================================
-# Struct OFVectorFrame (uguale al tuo)
-# ============================================================
-
-class OFVectorFrame:
-    """
-    Python equivalent of your C++ struct OFVectorFrame.
-    """
-    def __init__(self, p1, p2, fps, camParams):
-        self.position = p1
-        self.nextPosition = p2
-        self.deltaX = p2[0] - p1[0]
-        self.deltaY = p2[1] - p1[1]
-        self.uPixelSec = self.deltaX * fps
-        self.vPixelSec = self.deltaY * fps
-        self.magnitudePixel = math.sqrt(self.deltaX**2 + self.deltaY**2)
-
-        self.uDegSec = (self.uPixelSec / camParams.fx) * (180.0 / np.pi)
-        self.vDegSec = (self.vPixelSec / camParams.fy) * (180.0 / np.pi)
-        self.AMeter = compute_a_vector_meter(self.position, camParams)
-        self.directionVector = compute_direction_vector(self.position, camParams)
-        self.P = np.array([0.0, 0.0, 0.0], dtype=np.float32)
-
-
-# ============================================================
-# PID per Adaptive Slicing (versione Python del tuo C++)
-# ============================================================
-
-class AdaptiveSlicerPID:
-    def __init__(self, cfg: dict):
-        # SLICER
-        slicer_cfg = cfg["SLICER"]
-        self.initial_dt_ms = 1000.0 / slicer_cfg.get("fps", 50)
-
-        # adaptiveSlicing block
-        ad = cfg["adaptiveSlicing"]
-
-        self.adaptive_enable = ad.get("enable", False)
-        self.P = ad.get("P", 0.5)
-        self.I = ad.get("I", 0.05)
-        self.D = ad.get("D", 0.0)
-
-        self.maxTimingWindow = ad.get("maxTimingWindow", 25)   # ms
-        self.minTimingWindow = ad.get("minTimingWindow", 15)   # ms
-        self.adaptiveTimingWindowStep = ad.get("adaptiveTimingWindowStep", 1)  # ms
-        self.thresholdPIDEvents = ad.get("thresholdPIDEvents", 10)
-        self.OFPixelSetpoint = ad.get("OFPixelSetpoint", 7)    # pixel
-
-        # dt iniziale dall'SLICER
-        self.adaptiveTimeWindow = self.initial_dt_ms
-
-        # stati PID
-        self.integralError = 0.0
-        self.previousError = 0.0
-        self.PIDoutput = 0.0
-
-    def get_current_dt_ms(self):
-        return self.adaptiveTimeWindow
-
-    def update(self, filteredFlowVectors):
-        """
-        Aggiorna adaptiveTimeWindow in base alla magnitudo media dell'OF.
-        Ritorna SEMPRE (new_dt_ms, updated_flag)
-        """
-        # Caso: adaptive slicing off → non aggiornare mai
-        if not self.adaptive_enable:
-            return self.adaptiveTimeWindow, False
-
-        # Nessun flusso → non aggiornare
-        if len(filteredFlowVectors) == 0:
-            return self.adaptiveTimeWindow, False
-
-        # Magnitudo media dei vettori OF (pixel)
-        magnitude = 0.0
-        for vec in filteredFlowVectors:
-            magnitude += math.sqrt(vec.deltaX * vec.deltaX + vec.deltaY * vec.deltaY)
-        magnitude /= float(len(filteredFlowVectors))
-
-        # PID
-        error = self.OFPixelSetpoint - magnitude
-        self.integralError += error
-        derivative = error - self.previousError
-
-        self.PIDoutput = (
-            self.P * error +
-            self.I * self.integralError +
-            self.D * derivative
-        )
-
-        updateTimingWindow = False
-
-        # LOGICA PID -> come C++
-        if abs(self.PIDoutput) > self.thresholdPIDEvents and self.PIDoutput > 0 and self.adaptiveTimeWindow < self.maxTimingWindow:
-            self.adaptiveTimeWindow += self.adaptiveTimingWindowStep
-            self.adaptiveTimeWindow = min(self.adaptiveTimeWindow, self.maxTimingWindow)
-            self.integralError = 0.0
-            self.PIDoutput = 0.0
-            updateTimingWindow = True
-
-        elif abs(self.PIDoutput) > self.thresholdPIDEvents and self.PIDoutput < 0 and self.adaptiveTimeWindow > self.minTimingWindow:
-            self.adaptiveTimeWindow -= self.adaptiveTimingWindowStep
-            self.adaptiveTimeWindow = max(self.adaptiveTimeWindow, self.minTimingWindow)
-            self.integralError = 0.0
-            self.PIDoutput = 0.0
-            updateTimingWindow = True
-
-        elif abs(self.PIDoutput) > self.thresholdPIDEvents:
-            # Saturazione
-            self.integralError = 0.0
-            self.PIDoutput = 0.0
-
-        self.previousError = error
-
-        # Ritorna SEMPRE 2 valori
-        return self.adaptiveTimeWindow, updateTimingWindow
-
 
 # ============================================================
 # VisionNodeEventsPlayback
@@ -184,8 +70,6 @@ class VisionNodeEventsPlayback:
         self.flowVectors = []
         self.filteredFlowVectors = []
 
-        self.fps = 30.0
-        self.deltaTms = 1000.0 / self.fps
         self.ofTime = 0.0
         self.featureDetectionTime = 0.0
 
@@ -208,13 +92,29 @@ class VisionNodeEventsPlayback:
         self.H = events_cfg.get("H", 260)
         self.W = events_cfg.get("W", 346)
 
-        # dt fisso da SLICER
-        slicer_cfg = self.config["SLICER"]
-        fps_slicer = slicer_cfg.get("fps", 50)
-        self.fixed_dt_ms = 1000.0 / fps_slicer
 
-        # PID adaptive slicer
-        self.adaptiveSlicer = AdaptiveSlicerPID(self.config)
+        self.slicing_type = self.config["SLICING"]["type"]
+        self.fixed_dt_ms  = self.config["SLICING"].get("dt_ms", None) if self.slicing_type == "fixed" else None
+
+        # fps per LK, se adaptive lo calcoliamo dinamicamente
+        if self.slicing_type == "mvsec":
+            self.fps = 1000.0 / 10.0       # placeholder, aggiornato da mvsec iterator
+        elif self.slicing_type == "fixed":
+            self.fps = 1000.0 / self.fixed_dt_ms
+        elif self.slicing_type == "adaptive":
+            self.fps = 1000.0 / self.adaptiveSlicer.initial_dt_ms
+
+        self.deltaTms = 1000.0 / self.fps
+
+        # controlla se adaptive
+        self.use_adaptive = (self.slicing_type == "adaptive")
+
+        # crea PID SOLO se adaptive
+        self.adaptiveSlicer = AdaptiveSlicerPID(
+            self.config,
+            enabled=self.use_adaptive         # <--- ora dipende da SLICING.type
+        )
+
 
         # FAST detector
         self._initializeFeatureDetector()
@@ -314,7 +214,7 @@ class VisionNodeEventsPlayback:
         Carica eventi e rectify map per implementare slicing adaptive
         (caso adaptiveSlicing.enable=True).
         """
-        if not self.config["adaptiveSlicing"]["enable"]:
+        if not self.use_adaptive:
             self.all_evs = None
             self.ts_us = None
             return
@@ -411,15 +311,15 @@ class VisionNodeEventsPlayback:
     # RUN
     # --------------------------------------------------------
     def run(self):
-        """
-        Main loop:
-        - se adaptiveSlicing.enable=False → usa mvsec_evs_iterator(dT_ms fisso)
-        - se adaptiveSlicing.enable=True  → slicing custom + PID
-        """
-        if not self.config["adaptiveSlicing"]["enable"]:
+        if self.slicing_type == "mvsec" or self.slicing_type == "fixed":
             self._run_fixed_slicing()
-        else:
+
+        elif self.slicing_type == "adaptive":
             self._run_adaptive_slicing()
+
+        else:
+            raise ValueError(f"Unknown slicing type: {self.slicing_type}")
+
 
     # --------------------------------------------------------
     # RUN: fixed slicing con mvsec_evs_iterator
@@ -496,7 +396,7 @@ class VisionNodeEventsPlayback:
             if self.current_gt_flow is not None:
                 # esempio: debug
                 print(f"[GT] Frame {self.frameID}, t0={t0} us, GT ts={self.current_gt_ts_us} us, GT shape={self.current_gt_flow.shape}")
-
+                
             self._processEventFrame(event_frame, t0)
 
             # aggiorna PID in base ai filteredFlowVectors
@@ -605,14 +505,9 @@ class VisionNodeEventsPlayback:
                         self.flowVectors.append(fv)
 
                 if self.visualizeImage:
-                    flowVis = cv2.cvtColor(currFrame, cv2.COLOR_GRAY2BGR)
-                    for i in range(len(currPoints)):
-                        if status[i] == 1:
-                            p1 = tuple(map(int, self.prevPoints[i]))
-                            p2 = tuple(map(int, currPoints[i]))
-                            cv2.arrowedLine(flowVis, p1, p2, (0, 0, 255), 2)
-                    cv2.imshow("OF_raw", flowVis)
-                    cv2.waitKey(self.delayVisualize)
+                    visualize_gt_flow(self.current_gt_flow, self.currFrame, win_name="GT Flow")
+                    visualize_image(self.currFrame,currPoints,self.prevPoints,status,self.delayVisualize)
+
 
             # Outlier rejection
             self.filteredFlowVectors = rejectOutliersFrame(
