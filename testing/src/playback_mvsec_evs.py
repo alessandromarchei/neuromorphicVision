@@ -15,7 +15,8 @@ import cv2
 # iterator + util già esistenti (tuoi)
 from testing.utils.load_utils_mvsec import mvsec_evs_iterator, read_rmap
 from testing.utils.event_utils import to_event_frame
-from testing.utils.visualize import visualize_image, visualize_gt_flow
+from testing.utils.viz_utils import visualize_image, visualize_gt_flow
+from testing.utils.loss import compute_AEE
 
 
 # strutture dati e parametri (come nel tuo script a frame)
@@ -433,6 +434,17 @@ class VisionNodeEventsPlayback:
         endOF = time.perf_counter()
         self.ofTime = (endOF - startOF) * 1e6
 
+        self.evaluateOpticalFlow()
+
+
+        #apply visualization eventually
+        if self.visualizeImage:
+            visualize_gt_flow(self.current_gt_flow, self.currFrame, win_name="GT Flow", apply_mask=False)
+            visualize_gt_flow(self.flow_prediction_map, self.currFrame, win_name="GT Flow Prediction", apply_mask=False)
+            visualize_image(self.currFrame,self.currPoints,self.prevPoints,self.status)
+            cv2.waitKey(self.delayVisualize)
+
+
         self.prevPoints.clear()
 
         startFD = time.perf_counter()
@@ -483,7 +495,7 @@ class VisionNodeEventsPlayback:
     # --------------------------------------------------------
     def _calculateOpticalFlow(self, currFrame):
         if self.prevFrame is not None and len(self.prevPoints) > 0:
-            currPoints, status, err = cv2.calcOpticalFlowPyrLK(
+            self.currPoints, self.status, self.err = cv2.calcOpticalFlowPyrLK(
                 self.prevFrame, currFrame,
                 np.float32(self.prevPoints),
                 None,
@@ -496,18 +508,13 @@ class VisionNodeEventsPlayback:
 
             self.flowVectors.clear()
 
-            if currPoints is not None and status is not None:
-                for i in range(len(currPoints)):
-                    if status[i] == 1:
+            if self.currPoints is not None and self.status is not None:
+                for i in range(len(self.currPoints)):
+                    if self.status[i] == 1:
                         p1 = self.prevPoints[i]
-                        p2 = currPoints[i]
+                        p2 = self.currPoints[i]
                         fv = OFVectorFrame(p1, p2, self.fps, self.camParams)
                         self.flowVectors.append(fv)
-
-                if self.visualizeImage:
-                    visualize_gt_flow(self.current_gt_flow, self.currFrame, win_name="GT Flow")
-                    visualize_image(self.currFrame,currPoints,self.prevPoints,status,self.delayVisualize)
-
 
             # Outlier rejection
             self.filteredFlowVectors = rejectOutliersFrame(
@@ -515,10 +522,33 @@ class VisionNodeEventsPlayback:
                 self.magnitudeThresholdPixel,
                 self.boundThreshold
             )
-
         else:
             print("FIRST EVENT FRAME, skipping OF...")
 
+    def evaluateOpticalFlow(self):
+        """
+        1) convert discrete point wise optical flow into 2D optical flow
+        2) apply the AEE metric on the OF map
+        """
+
+        #apply a 2D (2,H,W) mask containing the flow per pixel value, in the self.filteredFlowVectors values
+        # flow_prediction = sparseTo2Dflow(self)
+        
+        #create the 2D map with the same shape of flow gt (sparse)
+        self.flow_prediction_map = np.zeros_like(self.current_gt_flow)
+
+        for point in self.filteredFlowVectors:
+            #insert each feature inside the map
+            (x_coord, y_coord) = np.round(point.position).astype(int)
+            self.flow_prediction_map[0][y_coord][x_coord] = point.deltaX
+            self.flow_prediction_map[1][y_coord][x_coord] = point.deltaY
+
+        # #apply AEE evaluation
+        # #TODO : fix 
+        # compute_AEE(estimated_flow=flow_prediction, gt_flow=self.current_gt_flow,
+        #             self.deltaTms, 50.0)
+        pass
+        
 
 # ============================================================
 # MAIN

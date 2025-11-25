@@ -14,7 +14,7 @@ FAST:
   nonmaxSuppression: false
   gradientScoring:
     enable: true
-    desiredFeatures: 100
+    desiredFeatures: 200
 
 ACCUMULATOR:
   neutralPotential: 0.5
@@ -23,7 +23,7 @@ ACCUMULATOR:
   ignorePolarity: true
 
 SLICING:
-  type: "fixed"    # "mvsec" | "fixed" | "adaptive"
+  type: "mvsec"    # "mvsec" | "fixed" | "adaptive"
   dt_ms: 10        # used only if type == "fixed"
 
 
