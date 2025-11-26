@@ -43,7 +43,7 @@ def compute_AEE(
     )
 
     # maschera: pixels with detected keypoints 
-    mask_event = (estimated_flow != 0)    #1 only where = detected feature
+    mask_event = (estimated_flow[0] != 0) + (estimated_flow[1] != 0)    #1 only where = detected feature
 
     # maschera: pixel with GT != 0 (eliminates those "black areas")
     mask_gt = ~(

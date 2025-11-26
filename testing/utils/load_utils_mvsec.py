@@ -98,6 +98,7 @@ def mvsec_evs_iterator(scenedir, side="left", dT_ms=None, H=260, W=346):
 
     # Image timestamps (when dT_ms = None)
     tss_imgs_us = sorted(np.loadtxt(os.path.join(scenedir, f"tss_imgs_us_{side}.txt")))
+    print(f"MVSEC sample points : {len(tss_imgs_us)}")
     num_imgs = len(tss_imgs_us)
 
     # Rectification map
@@ -139,7 +140,10 @@ def mvsec_evs_iterator(scenedir, side="left", dT_ms=None, H=260, W=346):
                 H=H, W=W
             )
 
-            yield event_frame, tss_imgs_us[img_i]
+            #get the dt of the batch expressed in ms
+            dt_ms = ((batch[-1][2] - batch[0][2])* 1e3).astype(np.float64)
+
+            yield event_frame, tss_imgs_us[img_i], dt_ms
 
         return
 
@@ -190,7 +194,11 @@ def mvsec_evs_iterator(scenedir, side="left", dT_ms=None, H=260, W=346):
             H=H, W=W
         )
 
-        yield event_frame, t0
+
+        #get the dt of the batch expressed in ms
+        dt_ms = ((batch[-1][2] - batch[0][2])* 1e3).astype(np.float64)
+
+        yield event_frame, t0, dt_ms
 
 
 def mvsec_evs_iterator_adaptive(scenedir, side="left", H=260, W=346, dt_function=None):

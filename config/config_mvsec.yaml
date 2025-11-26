@@ -1,7 +1,8 @@
 #MVSEC CONFIG FILE
 #MVSEC scene path
 EVENTS:
-  scene: "/home/alessandro/datasets/mvsec/indoor_flying/indoor_flying3_data/"
+  scene : /home/alessandro/datasets/mvsec/outdoor_day1/
+  #scene: "/home/alessandro/datasets/mvsec/indoor_flying/indoor_flying3_data/"
   side: "left"   #left 
   H: 260
   W: 346

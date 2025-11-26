@@ -82,6 +82,7 @@ class VisionNodeEventsPlayback:
         # GT flow corrente (se disponibile)
         self.current_gt_flow = None
         self.current_gt_ts_us = None
+        self.dt_gt_flow_ms = None
 
         # load config
         self._loadParametersFromYAML(yaml_path)
@@ -247,6 +248,8 @@ class VisionNodeEventsPlayback:
         """
         Cerca *_gt.hdf5 nella stessa cartella dello scene path
         e carica davis/left/flow_dist e flow_dist_ts.
+        GT flow samples at around 20 Hz
+        Default MVSEC optical flow is around 30 fps (so apply scaling)
         """
         pattern = os.path.join(self.events_dir, "*_gt.hdf5")
         files = glob.glob(pattern)
@@ -276,6 +279,16 @@ class VisionNodeEventsPlayback:
         f.close()
 
         self.flow_gt_ts_us = (flow_gt_ts * 1e6).astype(np.int64)
+
+        # ts_diff = list()
+        # for ts in len(self.flow_gt_ts_us):
+        #     if ts == len(self.flow_gt_ts_us):
+        #         break
+        #     ts_diff[ts] = self.flow_gt_ts_us[ts+1] - self.flow_gt_ts_us[ts]
+
+        # mean_dt_flow_ms = ts_diff.mean()
+        # print(f"Average dt for GT flow : {mean_dt_flow_ms*1000} ms")
+        # print(f"Average sample rate for GT flow : {1000000.0 / mean_dt_flow_ms} hz")
 
         print(f"[VisionNodeEventsPlayback] GT flow loaded: {self.flow_gt.shape}, ts shape={self.flow_gt_ts_us.shape}")
 
@@ -327,6 +340,7 @@ class VisionNodeEventsPlayback:
     # --------------------------------------------------------
     def _run_fixed_slicing(self):
         print("[VisionNodeEventsPlayback] Running with FIXED slicing.")
+        print(f"Delta T = {self.fixed_dt_ms} ms")
         iterator = mvsec_evs_iterator(
             self.events_dir,
             side=self.side,
@@ -335,14 +349,14 @@ class VisionNodeEventsPlayback:
             W=self.W
         )
 
-        for i, (event_frame, t_us) in enumerate(iterator):
-            self.deltaTms = self.fixed_dt_ms
+        for i, (event_frame, t_us, dt_ms) in enumerate(iterator):
+            self.deltaTms = dt_ms
 
             # GT per questo event frame (se disponibile)
             self.current_gt_flow, self.current_gt_ts_us = self._get_gt_flow(t_us)
             if self.current_gt_flow is not None:
                 # esempio: debug
-                print(f"[GT] Frame {i}, t={t_us} us, GT ts={self.current_gt_ts_us} us, GT shape={self.current_gt_flow.shape}")
+                print(f"[GT] Frame {i}, t={t_us} us, deltaT={self.deltaTms} ms, GT ts = {self.current_gt_ts_us} us, GT shape={self.current_gt_flow.shape}")
 
             self._processEventFrame(event_frame, t_us)
             self.frameID += 1
@@ -396,7 +410,7 @@ class VisionNodeEventsPlayback:
             self.current_gt_flow, self.current_gt_ts_us = self._get_gt_flow(t0)
             if self.current_gt_flow is not None:
                 # esempio: debug
-                print(f"[GT] Frame {self.frameID}, t0={t0} us, GT ts={self.current_gt_ts_us} us, GT shape={self.current_gt_flow.shape}")
+                print(f"[GT] Frame {self.frameID}, t0={t0} us, GT ts = {self.current_gt_ts_us} us, GT shape={self.current_gt_flow.shape}")
                 
             self._processEventFrame(event_frame, t0)
 
@@ -545,9 +559,13 @@ class VisionNodeEventsPlayback:
 
         # #apply AEE evaluation
         # #TODO : fix 
-        # compute_AEE(estimated_flow=flow_prediction, gt_flow=self.current_gt_flow,
-        #             self.deltaTms, 50.0)
-        pass
+        if self.deltaTms is not None:
+
+            AEE, outlier_percentage, N_points = compute_AEE(estimated_flow=self.flow_prediction_map, gt_flow=self.current_gt_flow,
+                    dt_input_ms=self.deltaTms, dt_gt_ms=50.0)
+        
+            print(f"AEE : {AEE}, outlier percentages ; {outlier_percentage*100.0}%, Number of evaluated points : {N_points}")
+            
         
 
 # ============================================================
