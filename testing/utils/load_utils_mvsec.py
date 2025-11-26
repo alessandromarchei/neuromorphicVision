@@ -294,186 +294,193 @@ def mvsec_evs_iterator(
         f_gt.close()
 
 
-# ======================================================================
-#   ADAPTIVE SLICING (STREAMING, NO ALL_EVS)
-# ======================================================================
+
 def mvsec_evs_iterator_adaptive(
     scenedir,
-    side="left",
+    side,
+    adaptive_slicer,          # object providing get_current_dt_ms() and update()
     H=260,
     W=346,
-    dt_function=None,
     rectify=True,
     max_events_loaded=DEFAULT_MAX_EVENTS_LOADED,
     batch_events=DEFAULT_BATCH_EVENTS,
 ):
     """
-    Adaptive temporal slicing.
+    Adaptive slicing MVSEC iterator.
+    Uses adaptive_slicer.get_current_dt_ms() at every step.
 
-    dt_function(t0_us, iteration) -> dt_ms for the current window.
-
-    t0_us is the start time (in microseconds) of the current window,
-    and `iteration` is 0, 1, 2, ...
-
-    Yields: event_frame, t0_us, dt_ms
+    Yields:
+        event_frame,
+        t_us,
+        dt_ms,
+        flow_map,
+        ts_gt,
+        dt_gt_ms
     """
 
-    print(f"[MVSEC] Adaptive slicing enabled (side={side})")
-    print(f"[MVSEC] max_events_loaded={max_events_loaded}, batch_events={batch_events}")
+    print(f"[MVSEC] Streaming ADAPTIVE events+GT from {scenedir}, side={side}")
 
-    h5in = glob.glob(os.path.join(scenedir, f"*_data.hdf5"))
-    assert len(h5in) == 1
+    # ---------------------------------------------------------
+    # Load main event HDF5
+    # ---------------------------------------------------------
+    h5_main = glob.glob(os.path.join(scenedir, "*_data.hdf5"))
+    assert len(h5_main) == 1
+    f_ev = h5py.File(h5_main[0], "r")
+    evs = f_ev[f"davis/{side}/events"]
+    N = evs.shape[0]
 
-    datain = h5py.File(h5in[0], "r")
-    evs = datain["davis"][side]["events"]
-    total_events = evs.shape[0]
-
+    # Rectification map
     rectify_map = read_rmap(os.path.join(scenedir, f"rectify_map_{side}.h5"), H=H, W=W)
 
-    print(f"[MVSEC] Total events: {total_events:,}")
+    # ---------------------------------------------------------
+    # Optional GT flow
+    # ---------------------------------------------------------
+    h5_gt = glob.glob(os.path.join(scenedir, "*_gt.hdf5"))
+    use_gt = len(h5_gt) > 0
 
-    try:
-        # Buffer state
-        x_buf = np.empty(0, dtype=np.uint16)
-        y_buf = np.empty(0, dtype=np.uint16)
-        ts_buf = np.empty(0, dtype=np.float64)
-        ts_us_buf = np.empty(0, dtype=np.int64)
-        pol_buf = np.empty(0, dtype=np.int8)
+    if use_gt:
+        f_gt = h5py.File(h5_gt[0], "r")
+        flow_dset = f_gt[f"davis/{side}/flow_dist"]
+        flow_ts   = f_gt[f"davis/{side}/flow_dist_ts"][:]  # seconds
+        flow_ts_us = (flow_ts * 1e6).astype(np.int64)
+        print(f"[MVSEC][Adaptive] GT flow streaming ready, N_gt={len(flow_ts_us)}")
+    else:
+        flow_dset = None
+        flow_ts_us = None
+        print("[MVSEC][Adaptive] No GT flow found.")
 
-        buf_start_idx_abs = 0
-        load_cursor_abs = 0
+    # ---------------------------------------------------------
+    # Streaming buffer
+    # ---------------------------------------------------------
+    x_buf = np.empty(0, dtype=np.uint16)
+    y_buf = np.empty(0, dtype=np.uint16)
+    ts_us_buf = np.empty(0, dtype=np.int64)
+    pol_buf = np.empty(0, dtype=np.int8)
 
-        last_ts_sec = float(evs[-1, 2])
-        t_end_us = int(last_ts_sec * 1e6)
+    abs_start = 0
+    load_cursor = 0
 
-        def load_more_events_time():
-            nonlocal x_buf, y_buf, ts_buf, ts_us_buf, pol_buf
-            nonlocal load_cursor_abs, buf_start_idx_abs
+    def load_more():
+        nonlocal load_cursor, x_buf, y_buf, ts_us_buf, pol_buf
+        if load_cursor >= N:
+            return False
+        end = min(load_cursor + batch_events, N)
 
-            if load_cursor_abs >= total_events:
-                return
+        x = evs[load_cursor:end, 0].astype(np.uint16)
+        y = evs[load_cursor:end, 1].astype(np.uint16)
+        ts = evs[load_cursor:end, 2].astype(np.float64)
+        p  = evs[load_cursor:end, 3].astype(np.int8)
 
-            end = min(load_cursor_abs + batch_events, total_events)
+        ts_us = (ts * 1e6).astype(np.int64)
 
-            x_chunk = evs[load_cursor_abs:end, 0].astype(np.uint16)
-            y_chunk = evs[load_cursor_abs:end, 1].astype(np.uint16)
-            ts_chunk = evs[load_cursor_abs:end, 2].astype(np.float64)
-            pol_chunk = evs[load_cursor_abs:end, 3].astype(np.int8)
-            ts_us_chunk = (ts_chunk * 1e6).astype(np.int64)
+        x_buf = np.concatenate([x_buf, x])
+        y_buf = np.concatenate([y_buf, y])
+        ts_us_buf = np.concatenate([ts_us_buf, ts_us])
+        pol_buf = np.concatenate([pol_buf, p])
 
-            if x_buf.size == 0:
-                x_buf = x_chunk
-                y_buf = y_chunk
-                ts_buf = ts_chunk
-                ts_us_buf = ts_us_chunk
-                pol_buf = pol_chunk
+        load_cursor = end
+        return True
+
+    def trim_buffer():
+        nonlocal abs_start, x_buf, y_buf, ts_us_buf, pol_buf
+        extra = len(x_buf) - max_events_loaded
+        if extra > 0:
+            x_buf = x_buf[extra:]
+            y_buf = y_buf[extra:]
+            ts_us_buf = ts_us_buf[extra:]
+            pol_buf = pol_buf[extra:]
+            abs_start += extra
+
+    # ---------------------------------------------------------
+    # Find GT closest to timestamp
+    # ---------------------------------------------------------
+    def load_gt_for(t_us):
+        if not use_gt:
+            return None, None, None
+
+        idx = np.searchsorted(flow_ts_us, t_us, side="left")
+
+        if idx == 0:
+            best = 0
+        elif idx == len(flow_ts_us):
+            best = idx - 1
+        else:
+            before = idx - 1
+            after  = idx
+            if abs(flow_ts_us[before] - t_us) <= abs(flow_ts_us[after] - t_us):
+                best = before
             else:
-                x_buf = np.concatenate([x_buf, x_chunk])
-                y_buf = np.concatenate([y_buf, y_chunk])
-                ts_buf = np.concatenate([ts_buf, ts_chunk])
-                ts_us_buf = np.concatenate([ts_us_buf, ts_us_chunk])
-                pol_buf = np.concatenate([pol_buf, pol_chunk])
+                best = after
 
-            load_cursor_abs = end
+        flow_map = flow_dset[best]            # load only this map
+        ts_gt = flow_ts_us[best]
+        dt_gt_ms = None
+        if best > 0:
+            dt_gt_ms = (flow_ts_us[best] - flow_ts_us[best - 1]) * 1e-3
 
-        def ensure_buffer_covers_time(t1_us):
-            nonlocal ts_us_buf
+        return flow_map, ts_gt, dt_gt_ms
 
-            while True:
-                if ts_us_buf.size == 0:
-                    if load_cursor_abs >= total_events:
-                        break
-                    load_more_events_time()
-                    continue
+    # ---------------------------------------------------------
+    # INITIAL LOAD
+    # ---------------------------------------------------------
+    if load_cursor == 0:
+        load_more()
 
-                if ts_us_buf[-1] >= t1_us:
-                    break
+    # absolute time range
+    t_end_us = int(float(evs[-1, 2]) * 1e6)
+    t0_us = ts_us_buf[0]
 
-                if load_cursor_abs >= total_events:
-                    break
+    # ---------------------------------------------------------
+    # ADAPTIVE LOOP
+    # ---------------------------------------------------------
+    while t0_us < t_end_us:
 
-                load_more_events_time()
+        # 1. get dt_ms from PID controller
+        dt_ms = adaptive_slicer.get_current_dt_ms()
+        dt_us = int(dt_ms * 1000)
+        t1_us = t0_us + dt_us
 
-        def trim_buffer_by_time(t0_us):
-            nonlocal x_buf, y_buf, ts_buf, ts_us_buf, pol_buf, buf_start_idx_abs
-
-            if ts_us_buf.size == 0:
-                return
-
-            cut = np.searchsorted(ts_us_buf, t0_us, side="left")
-            if cut > 0:
-                if cut >= ts_us_buf.size:
-                    x_buf = np.empty(0, dtype=np.uint16)
-                    y_buf = np.empty(0, dtype=np.uint16)
-                    ts_buf = np.empty(0, dtype=np.float64)
-                    ts_us_buf = np.empty(0, dtype=np.int64)
-                    pol_buf = np.empty(0, dtype=np.int8)
-                else:
-                    x_buf = x_buf[cut:]
-                    y_buf = y_buf[cut:]
-                    ts_buf = ts_buf[cut:]
-                    ts_us_buf = ts_us_buf[cut:]
-                    pol_buf = pol_buf[cut:]
-
-                buf_start_idx_abs += cut
-
-        # Initialize
-        load_more_events_time()
-        if ts_us_buf.size == 0:
-            return
-
-        t0_us = int(ts_us_buf[0])
-        iteration = 0
-
-        while t0_us < t_end_us:
-
-            if dt_function is None:
-                raise ValueError("[MVSEC] dt_function must be provided for adaptive slicing.")
-
-            dt_ms = float(dt_function(t0_us, iteration))
-            dt_us = int(dt_ms * 1000)
-            t1_us = t0_us + dt_us
-
-            ensure_buffer_covers_time(t1_us)
-
-            if ts_us_buf.size == 0:
+        # 2. Make sure buffer covers t1_us
+        while len(ts_us_buf) == 0 or ts_us_buf[-1] < t1_us:
+            if not load_more():
                 break
+            trim_buffer()
 
-            start = np.searchsorted(ts_us_buf, t0_us, side="left")
-            end = np.searchsorted(ts_us_buf, t1_us, side="left")
+        if len(ts_us_buf) == 0:
+            break
 
-            if end > start:
-                bx = x_buf[start:end]
-                by = y_buf[start:end]
-                bp = pol_buf[start:end]
-                bts = ts_buf[start:end]
+        # 3. slice events
+        start = np.searchsorted(ts_us_buf, t0_us, side="left")
+        end   = np.searchsorted(ts_us_buf, t1_us, side="left")
 
-                if rectify:
-                    rect = rectify_map[
-                        by.astype(np.int32),
-                        bx.astype(np.int32)
-                    ]
-                else:
-                    rect = np.stack([bx, by], axis=-1)
+        if end > start:
+            bx = x_buf[start:end]
+            by = y_buf[start:end]
+            bp = pol_buf[start:end]
 
-                event_frame = to_event_frame(
-                    rect[..., 0], rect[..., 1],
-                    bp,
-                    H=H, W=W
-                )
+            if rectify:
+                rect = rectify_map[by.astype(np.int32), bx.astype(np.int32)]
+                xs = rect[:,0]
+                ys = rect[:,1]
+            else:
+                xs = bx
+                ys = by
 
-                # dt_ms here is what we chose via dt_function, but we can also
-                # compute the actual temporal span if you prefer:
-                # dt_ms_actual = (bts[-1] - bts[0]) * 1e3
+            event_frame = to_event_frame(xs, ys, bp, H, W)
 
-                yield event_frame, t0_us, dt_ms
+            # 4. load GT for t0_us
+            flow_map, ts_gt, dt_gt_ms = load_gt_for(t0_us)
 
-            t0_us = t1_us
-            iteration += 1
+            # 5. OUTPUT
+            yield event_frame, t0_us, dt_ms, flow_map, ts_gt, dt_gt_ms
 
-            trim_buffer_by_time(t0_us)
+            # 6. update PID using your flow vectors (external)
+            #    This is done outside in VisionNode
 
-        return
+        # 7. advance window
+        t0_us = t1_us
+        trim_buffer()
 
-    finally:
-        datain.close()
+    f_ev.close()
+    if use_gt:
+        f_gt.close()

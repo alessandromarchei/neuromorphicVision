@@ -13,7 +13,7 @@ import cv2
 # ============================================================
 
 # iterator + util già esistenti (tuoi)
-from testing.utils.load_utils_mvsec import mvsec_evs_iterator, read_rmap
+from testing.utils.load_utils_mvsec import mvsec_evs_iterator, read_rmap, mvsec_evs_iterator_adaptive
 from testing.utils.event_utils import to_event_frame
 from testing.utils.viz_utils import visualize_image, visualize_gt_flow
 from testing.utils.loss import compute_AEE
@@ -99,6 +99,15 @@ class VisionNodeEventsPlayback:
         self.slicing_type = self.config["SLICING"]["type"]
         self.fixed_dt_ms  = self.config["SLICING"].get("dt_ms", None) if self.slicing_type == "fixed" else None
 
+        # controlla se adaptive
+        self.use_adaptive = (self.slicing_type == "adaptive")
+
+        # crea PID SOLO se adaptive
+        self.adaptiveSlicer = AdaptiveSlicerPID(
+            self.config,
+            enabled=self.use_adaptive         # <--- ora dipende da SLICING.type
+        )
+
         # fps per LK, se adaptive lo calcoliamo dinamicamente
         if self.slicing_type == "mvsec":
             self.fps = 1000.0 / 10.0       # placeholder, aggiornato da mvsec iterator
@@ -108,15 +117,6 @@ class VisionNodeEventsPlayback:
             self.fps = 1000.0 / self.adaptiveSlicer.initial_dt_ms
 
         self.deltaTms = 1000.0 / self.fps
-
-        # controlla se adaptive
-        self.use_adaptive = (self.slicing_type == "adaptive")
-
-        # crea PID SOLO se adaptive
-        self.adaptiveSlicer = AdaptiveSlicerPID(
-            self.config,
-            enabled=self.use_adaptive         # <--- ora dipende da SLICING.type
-        )
 
 
         # FAST detector
@@ -282,66 +282,39 @@ class VisionNodeEventsPlayback:
     # RUN: adaptive slicing con PID
     # --------------------------------------------------------
     def _run_adaptive_slicing(self):
-        print("[VisionNodeEventsPlayback] Running with ADAPTIVE slicing (PID).")
+        print("[VisionNode] Running ADAPTIVE slicing with unified iterator")
 
-        t0 = self.ts_start
-        while t0 < self.ts_end:
-            dt_ms = self.adaptiveSlicer.get_current_dt_ms()
-            dt_us = int(dt_ms * 1000)
-            t1 = t0 + dt_us
+        iterator = mvsec_evs_iterator_adaptive(
+            self.events_dir,
+            side=self.side,
+            adaptive_slicer=self.adaptiveSlicer,
+            H=self.H,
+            W=self.W,
+            rectify=self.rectify
+        )
 
-            start = np.searchsorted(self.ts_us, t0, side="left")
-            end   = np.searchsorted(self.ts_us, t1, side="left")
-
-            if end <= start:
-                t0 = t1
-                continue
-
-            batch = self.all_evs[start:end]
-            xs = batch[:, 0].astype(np.int32)
-            ys = batch[:, 1].astype(np.int32)
-            pols = batch[:, 3]
-
-            if not self.rectify:
-                rect = np.stack([xs, ys], axis=-1)
-            else:
-                rect = self.rectify_map[ys, xs]
-
-                
-            xs_rect = rect[..., 0].astype(np.int32)
-            ys_rect = rect[..., 1].astype(np.int32)
-
-            # clamp in-bounds
-            mask = (
-                (xs_rect >= 0) & (xs_rect < self.W) &
-                (ys_rect >= 0) & (ys_rect < self.H)
-            )
-            xs_rect = xs_rect[mask]
-            ys_rect = ys_rect[mask]
-            pols = pols[mask]
-
-            event_frame = to_event_frame(xs_rect, ys_rect, pols, self.H, self.W)
+        for (event_frame,
+            t_us,
+            dt_ms,
+            flow_map,
+            ts_gt,
+            dt_gt_ms) in iterator:
 
             self.deltaTms = dt_ms
+            self.current_gt_flow = flow_map
+            self.current_gt_ts_us = ts_gt
+            self.dt_gt_flow_ms = dt_gt_ms
 
-            # GT per questo event frame (t0 us)
-            if self.current_gt_flow is not None:
-                # esempio: debug
-                print(f"[GT] Frame {self.frameID}, t0={t0} us, GT ts = {self.current_gt_ts_us} us, GT shape={self.current_gt_flow.shape}")
-                
-            self._processEventFrame(event_frame, t0)
+            # Process frame (LK + FAST)
+            self._processEventFrame(event_frame, t_us)
 
-            # aggiorna PID in base ai filteredFlowVectors
-            new_dt_ms, updated = self.adaptiveSlicer.update(self.filteredFlowVectors)
+            # update PID based on filtered flow
+            new_dt, updated = self.adaptiveSlicer.update(self.filteredFlowVectors)
             if updated:
-                print(f"[AdaptiveSlicing] Updated dt_ms = {new_dt_ms:.3f} (frameID={self.frameID})")
+                print(f"[Adaptive PID] dt_ms updated → {new_dt:.2f}")
 
             self.frameID += 1
-            t0 = t1
 
-        if self.visualizeImage:
-            cv2.destroyAllWindows()
-        print("[VisionNodeEventsPlayback] Finished adaptive-slicing run.")
 
     # --------------------------------------------------------
     # Processa UN event frame (come processFrames(), ma senza altitude)
