@@ -93,6 +93,7 @@ class VisionNodeEventsPlayback:
         self.side = events_cfg.get("side", "left")
         self.H = events_cfg.get("H", 260)
         self.W = events_cfg.get("W", 346)
+        self.rectify = events_cfg.get("rectify", True)
 
 
         self.slicing_type = self.config["SLICING"]["type"]
@@ -346,7 +347,8 @@ class VisionNodeEventsPlayback:
             side=self.side,
             dT_ms=self.fixed_dt_ms,
             H=self.H,
-            W=self.W
+            W=self.W,
+            rectify=self.rectify
         )
 
         for i, (event_frame, t_us, dt_ms) in enumerate(iterator):
@@ -389,7 +391,12 @@ class VisionNodeEventsPlayback:
             ys = batch[:, 1].astype(np.int32)
             pols = batch[:, 3]
 
-            rect = self.rectify_map[ys, xs]
+            if not self.rectify:
+                rect = np.stack([xs, ys], axis=-1)
+            else:
+                rect = self.rectify_map[ys, xs]
+
+                
             xs_rect = rect[..., 0].astype(np.int32)
             ys_rect = rect[..., 1].astype(np.int32)
 

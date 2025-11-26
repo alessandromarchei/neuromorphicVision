@@ -47,7 +47,7 @@ def read_rmap(rect_file, H=180, W=240):
 # ======================================================================
 #   MVSEC EVENT ITERATOR (NO-ALL_EVS VERSION)
 # ======================================================================
-def mvsec_evs_iterator(scenedir, side="left", dT_ms=None, H=260, W=346):
+def mvsec_evs_iterator(scenedir, side="left", dT_ms=None, H=260, W=346, rectify=True):
 
     print(f"[MVSEC] Loading MVSEC events from {scenedir}")
 
@@ -108,10 +108,13 @@ def mvsec_evs_iterator(scenedir, side="left", dT_ms=None, H=260, W=346):
                 continue
 
             # Rectify coordinates
-            rect = rectify_map[
-                by.astype(np.int32),
-                bx.astype(np.int32)
-            ]
+            if not rectify:
+                rect = np.stack([bx, by], axis=-1)
+            else:
+                rect = rectify_map[
+                    by.astype(np.int32),
+                    bx.astype(np.int32)
+                ]
 
             # Build event frame
             event_frame = to_event_frame(
@@ -154,11 +157,15 @@ def mvsec_evs_iterator(scenedir, side="left", dT_ms=None, H=260, W=346):
         bp  = pol[start:end]
         bts = ts[start:end]
 
-        rect = rectify_map[
-            by.astype(np.int32),
-            bx.astype(np.int32)
-        ]
+        if not rectify:
+            rect = np.stack([bx, by], axis=-1)
+        else:
+            rect = rectify_map[
+                by.astype(np.int32),
+                bx.astype(np.int32)
+            ]
 
+            
         event_frame = to_event_frame(
             rect[..., 0], rect[..., 1],
             bp,
