@@ -118,6 +118,7 @@ class VisionNodeEventsPlayback:
 
         self.deltaTms = 1000.0 / self.fps
 
+        self.gt_mode = self.config["SLICING"]["gt_mode"]
 
         # FAST detector
         self._initializeFeatureDetector()
@@ -266,7 +267,8 @@ class VisionNodeEventsPlayback:
             dT_ms=self.fixed_dt_ms,
             H=self.H,
             W=self.W,
-            rectify=self.rectify
+            rectify=self.rectify,
+            gt_mode=self.gt_mode
         )
 
         for i, (event_frame, t_us, dt_ms, flow_map, ts_gt, dt_gt_ms) in enumerate(iterator):
@@ -444,18 +446,23 @@ class VisionNodeEventsPlayback:
         for point in self.filteredFlowVectors:
             #insert each feature inside the map
             (x_coord, y_coord) = np.round(point.position).astype(int)
+
+            #check shape
+            if self.flow_prediction_map.ndim == 3 and self.flow_prediction_map.shape[2] == 2:
+                #assuming the shape is (H, W, 2), so reshape to (2, H, W)
+                self.flow_prediction_map = self.flow_prediction_map.transpose(2, 0, 1)
+
             self.flow_prediction_map[0][y_coord][x_coord] = point.deltaX
             self.flow_prediction_map[1][y_coord][x_coord] = point.deltaY
 
         # #apply AEE evaluation
         # #TODO : fix 
-        if self.deltaTms is not None:
+        if self.deltaTms is not None and self.dt_gt_flow_ms is not None:
 
             AEE, outlier_percentage, N_points = compute_AEE(estimated_flow=self.flow_prediction_map, gt_flow=self.current_gt_flow,
-                    dt_input_ms=self.deltaTms, dt_gt_ms=50.0)
+                    dt_input_ms=self.deltaTms, dt_gt_ms=self.dt_gt_flow_ms)
         
-            print(f"AEE : {AEE}, outlier percentages ; {outlier_percentage*100.0}%, Number of evaluated points : {N_points}")
-            
+            print(f"AEE : {AEE:.3f}, outlier percentages : {outlier_percentage*100.0:.3f}%, Event frame dt : {self.deltaTms:.3f} ms, GT Flow dt : {self.dt_gt_flow_ms:.3f} ms")
         
 
 # ============================================================

@@ -30,10 +30,19 @@ Our representation:
   p    → int8   (1 byte)
 
   
-  dt_ms defaults :
-  outdoor: 20 ms → 50 hz
-  indoor: 30 ms → ~33 hz
+  frames dt_ms defaults :
+    outdoor: 21.941 ms → 45 hz
+    indoor: 31.859 ms → ~31 hz
   
+  flow_gt dt_ms defaults :
+    outdoor: 50.0 ms → ~20 hz
+    indoor: 50.0 ms → ~20 hz
+
+    
+    LOGIC : 
+    20hz : means use the normal gt flow frequency
+    dt=1 : means use the gt flow upsampled to the APS camera frequency (45 hz for outdoor, 31 hz for indoor)
+    dt=4 : means use the gt flow downsampled to 1/4 of the APS camera frequency (11 hz for outdoor, 8 hz for indoor)
   events_idxs : 
   - outdoor day1: starts at -1
   - indoor flying : starts at N > 0
@@ -52,6 +61,7 @@ def read_rmap(rect_file, H=180, W=240):
     rmap.close()
     return rectify_map
 
+
 def mvsec_evs_iterator(
     scenedir,
     side="left",
@@ -59,31 +69,30 @@ def mvsec_evs_iterator(
     H=260,
     W=346,
     rectify=True,
+    gt_mode="20hz",  # NEW: "20hz" | "dt1" | "dt4"
     max_events_loaded=DEFAULT_MAX_EVENTS_LOADED,
     batch_events=DEFAULT_BATCH_EVENTS,
 ):
     """
-    Streaming iterator returning:
+    Streaming iterator that yields tuples:
+
         event_frame,
         t_event_us,
-        event_dt_ms,
-        gt_flow_map,
-        gt_flow_ts_us,
-        gt_flow_dt_ms
+        dt_ms,
+        flow_map,
+        flow_ts_us,
+        flow_dt_ms
 
-    Supports:
-        - MVSEC default slicing (dT_ms=None)
-        - Fixed temporal slicing (dT_ms > 0)
-
-    Loads:
-        ✓ events in small batches
-        ✓ 1 optical flow map at a time (closest in time)
+    gt_mode:
+        - "20hz" → *_gt.hdf5
+        - "dt1"  → new scene.h5 → flow/dt=1
+        - "dt4"  → new scene.h5 → flow/dt=4
     """
 
-    print(f"[MVSEC] Streaming events+GT from {scenedir}, side={side}, dT_ms={dT_ms}")
+    print(f"[MVSEC] Streaming from {scenedir}, side={side}, dT_ms={dT_ms}, GT={gt_mode}")
 
     # ---------------------------------------------------------
-    # Load main event HDF5
+    # Load EVENTS from *_data.hdf5
     # ---------------------------------------------------------
     h5_main = glob.glob(os.path.join(scenedir, "*_data.hdf5"))
     assert len(h5_main) == 1
@@ -91,28 +100,76 @@ def mvsec_evs_iterator(
     evs = f_ev[f"davis/{side}/events"]
     N = evs.shape[0]
 
-    # Rectification map
     rectify_map = read_rmap(os.path.join(scenedir, f"rectify_map_{side}.h5"), H=H, W=W)
 
     # ---------------------------------------------------------
-    # Optional ground-truth flow (if available)
+    # SELECT FLOW SOURCE
     # ---------------------------------------------------------
-    h5_gt = glob.glob(os.path.join(scenedir, "*_gt.hdf5"))
-    use_gt = len(h5_gt) > 0
+    flow_dset = None
+    flow_ts_us = None
 
-    if use_gt:
+    if gt_mode == "20hz":
+        print("[GT] Using *_gt.hdf5 (20 Hz)")
+        h5_gt = glob.glob(os.path.join(scenedir, "*_gt.hdf5"))
+        assert len(h5_gt) == 1
         f_gt = h5py.File(h5_gt[0], "r")
-        flow_dset = f_gt[f"davis/{side}/flow_dist"]        # (N_gt, 2, H, W)
-        flow_ts   = f_gt[f"davis/{side}/flow_dist_ts"][:] # seconds
-        flow_ts_us = (flow_ts * 1e6).astype(np.int64)
-        print(f"[MVSEC] GT flow loaded lazily, N_gt={len(flow_ts_us)}")
+        flow_dset = f_gt[f"davis/{side}/flow_dist"]
+        ts_sec = f_gt[f"davis/{side}/flow_dist_ts"][:]
+        flow_ts_us = (ts_sec * 1e6).astype(np.int64)
+
+    elif gt_mode in ("dt1", "dt4"):
+        dt = 1 if gt_mode == "dt1" else 4
+        print(f"[GT] Using {scenedir}*dt.h5 → flow/dt={dt}")
+
+        h5_dt = glob.glob(os.path.join(scenedir, "*dt.h5"))
+        assert len(h5_dt) == 1
+        f_gt = h5py.File(h5_dt[0], "r")
+
+        group = f_gt[f"flow/dt={dt}"]
+        flow_dset = [k for k in group.keys() if k != "timestamps"]
+        flow_dset.sort()
+        flow_dset = [group[k] for k in flow_dset]
+
+        ts_pairs = group["timestamps"][:]   # (N, 2) prev_t, cur_t
+        flow_ts_us = (ts_pairs[:, 1] * 1e6).astype(np.int64)
+
+        f_gt_dt = f_gt  # for closing later
+
     else:
-        flow_dset = None
-        flow_ts_us = None
-        print("[MVSEC] No GT flow file found.")
+        raise ValueError("gt_mode must be: '20hz', 'dt1', 'dt4'")
+
+    print(f"[GT] Loaded {len(flow_ts_us)} flow timestamps")
+
+    # Prevent OOM by streaming GT only when needed
+    def load_gt_for(t_us):
+        """Return nearest GT flow lazily."""
+        idx = np.searchsorted(flow_ts_us, t_us, side="left")
+        if idx == 0:
+            best = 0
+        elif idx >= len(flow_ts_us):
+            best = len(flow_ts_us) - 1
+        else:
+            before = idx - 1
+            after = idx
+            best = before if abs(flow_ts_us[before] - t_us) <= abs(flow_ts_us[after] - t_us) else after
+
+        # Load flow map
+        if gt_mode == "20hz":
+            flow_map = flow_dset[best]     # (2,H,W)
+        else:
+            flow_map = flow_dset[best][...]  # dataset in list
+
+        # Compute dt_ms
+        dt_ms = None
+        if best > 0:
+            dt_ms = (flow_ts_us[best] - flow_ts_us[best - 1]) * 1e-3
+
+
+        return flow_map, flow_ts_us[best], dt_ms
+
 
     # ---------------------------------------------------------
-    # Event buffer for streaming
+    # EVENT STREAMING BUFFER
     # ---------------------------------------------------------
     x_buf = np.empty(0, dtype=np.uint16)
     y_buf = np.empty(0, dtype=np.uint16)
@@ -123,23 +180,19 @@ def mvsec_evs_iterator(
     load_cursor = 0
 
     def load_more():
+        """Load next event batch"""
         nonlocal load_cursor, x_buf, y_buf, ts_us_buf, pol_buf
         if load_cursor >= N:
             return False
         end = min(load_cursor + batch_events, N)
-
         x = evs[load_cursor:end, 0].astype(np.uint16)
         y = evs[load_cursor:end, 1].astype(np.uint16)
         ts = evs[load_cursor:end, 2].astype(np.float64)
         p  = evs[load_cursor:end, 3].astype(np.int8)
-
-        ts_us = (ts * 1e6).astype(np.int64)
-
         x_buf = np.concatenate([x_buf, x])
         y_buf = np.concatenate([y_buf, y])
-        ts_us_buf = np.concatenate([ts_us_buf, ts_us])
+        ts_us_buf = np.concatenate([ts_us_buf, (ts * 1e6).astype(np.int64)])
         pol_buf = np.concatenate([pol_buf, p])
-
         load_cursor = end
         return True
 
@@ -153,96 +206,65 @@ def mvsec_evs_iterator(
             pol_buf = pol_buf[extra:]
             abs_start += extra
 
-    # ---------------------------------------------------------
-    # Helper: load GT closest to timestamp t_us
-    # ---------------------------------------------------------
-    def load_gt_for(t_us):
-        if not use_gt:
-            return None, None, None
 
-        idx = np.searchsorted(flow_ts_us, t_us, side="left")
-
-        # choose nearest
-        if idx == 0:
-            best = 0
-        elif idx == len(flow_ts_us):
-            best = idx - 1
-        else:
-            before = idx - 1
-            after  = idx
-            if abs(flow_ts_us[before] - t_us) <= abs(flow_ts_us[after] - t_us):
-                best = before
-            else:
-                best = after
-
-        flow_map = flow_dset[best]           # loaded on demand
-        ts_gt = flow_ts_us[best]
-        dt_gt_ms = None
-        if best > 0:
-            dt_gt_ms = (flow_ts_us[best] - flow_ts_us[best - 1]) * 1e-3
-
-        return flow_map, ts_gt, dt_gt_ms
-
-    # ---------------------------------------------------------
-    # CASE A: MVSEC image slicing
-    # ---------------------------------------------------------
+    # =======================================================================
+    # CASE A: MVSEC IMAGE SLICING (dT_ms=None)
+    # =======================================================================
     if dT_ms is None:
-        print("[MVSEC] Using MVSEC image slicing.")
-        event_idxs = f_ev[f"davis/{side}/image_raw_event_inds"][:]
-        tss_imgs_us = sorted(np.loadtxt(os.path.join(scenedir, f"tss_imgs_us_{side}.txt")))
+        print("[MVSEC] Using original MVSEC slicing (APS timestamps).")
 
-        #event idxs starts at -1 for outdoor day1 -> prevent error by removing the first index
-        if event_idxs[0] == -1:
-            event_idxs = event_idxs[1:]
-            tss_imgs_us = tss_imgs_us[1:]
+        idxs = f_ev[f"davis/{side}/image_raw_event_inds"][:]
+        img_ts = f_ev[f"davis/{side}/image_raw_ts"][:]
+        img_ts_us = (img_ts * 1e6).astype(np.int64)
+
+        if idxs[0] == -1:  # OutdoorDay1 weird indexing
+            idxs = idxs[1:]
+            img_ts_us = img_ts_us[1:]
 
         prev_end = 0
-        for img_i, img_ts_us in enumerate(tss_imgs_us):
 
-            idx1 = int(event_idxs[img_i])
+        for i, ts_us in enumerate(img_ts_us):
+            idx1 = int(idxs[i])
             idx0 = prev_end
             prev_end = idx1
 
-            while abs_start + len(x_buf) < idx1:
+            # Fill buffer
+            while abs_start + len(ts_us_buf) < idx1:
                 if not load_more():
                     break
                 trim_buffer()
 
             local0 = idx0 - abs_start
             local1 = idx1 - abs_start
-            if local0 < 0 or local1 > len(x_buf):
-                raise RuntimeError("Buffer does not contain required event range.")
 
             bx = x_buf[local0:local1]
             by = y_buf[local0:local1]
-            bts_us = ts_us_buf[local0:local1]
             bp = pol_buf[local0:local1]
 
-            if rectify:
-                rect = rectify_map[by.astype(np.int32), bx.astype(np.int32)]
-                xs = rect[:,0]
-                ys = rect[:,1]
-            else:
-                xs = bx
-                ys = by
+            rect = rectify_map[by.astype(np.int32), bx.astype(np.int32)]
+            xs, ys = rect[:, 0], rect[:, 1]
 
             event_frame = to_event_frame(xs, ys, bp, H, W)
-            dt_ms = (bts_us[-1] - bts_us[0]) * 1e-3
+            dt_ms_here = (ts_us_buf[local1 - 1] - ts_us_buf[local0]) * 1e-3
 
-            # load GT
-            flow_map, ts_gt, dt_gt_ms = load_gt_for(img_ts_us)
+            # GT sample nearest to this image_ts
+            flow_map, flow_ts, flow_dt = load_gt_for(ts_us)
 
-            yield event_frame, img_ts_us, dt_ms, flow_map, ts_gt, dt_gt_ms
+            #reshape the output flow to eventually 2, H, W
+            if flow_map.shape[2] == 2:
+                flow_map = flow_map.transpose(2, 0, 1)
+
+            yield event_frame, ts_us, dt_ms_here, flow_map, flow_ts, flow_dt
 
         f_ev.close()
-        if use_gt:
-            f_gt.close()
         return
 
-    # ---------------------------------------------------------
-    # CASE B: fixed temporal slicing
-    # ---------------------------------------------------------
-    print("[MVSEC] Using fixed temporal slicing.")
+
+    # =======================================================================
+    # CASE B: FIXED TEMPORAL SLICING (dT_ms > 0)
+    # =======================================================================
+    print(f"[MVSEC] Fixed slicing: every {dT_ms} ms")
+
     if load_cursor == 0:
         load_more()
 
@@ -258,9 +280,6 @@ def mvsec_evs_iterator(
                 break
             trim_buffer()
 
-        if len(ts_us_buf) == 0:
-            break
-
         start = np.searchsorted(ts_us_buf, t0_us, side="left")
         end   = np.searchsorted(ts_us_buf, t1_us, side="left")
 
@@ -268,57 +287,56 @@ def mvsec_evs_iterator(
             bx = x_buf[start:end]
             by = y_buf[start:end]
             bp = pol_buf[start:end]
-            bts_us = ts_us_buf[start:end]
 
-            if rectify:
-                rect = rectify_map[by.astype(np.int32), bx.astype(np.int32)]
-                xs = rect[:,0]
-                ys = rect[:,1]
-            else:
-                xs = bx
-                ys = by
-
+            rect = rectify_map[by.astype(np.int32), bx.astype(np.int32)]
+            xs, ys = rect[:, 0], rect[:, 1]
             event_frame = to_event_frame(xs, ys, bp, H, W)
-            dt_ms_batch = (bts_us[-1] - bts_us[0]) * 1e-3
 
-            # GT
-            flow_map, ts_gt, dt_gt_ms = load_gt_for(t0_us)
+            # GT nearest to t0_us
+            flow_map, flow_ts, flow_dt = load_gt_for(t0_us)
 
-            yield event_frame, t0_us, dt_ms_batch, flow_map, ts_gt, dt_gt_ms
+            dt_ms_here = (ts_us_buf[end - 1] - ts_us_buf[start]) * 1e-3
+
+            #reshape the output flow to eventually 2, H, W
+            if flow_map.shape[2] == 2:
+                flow_map = flow_map.transpose(2, 0, 1)
+
+                
+            yield event_frame, t0_us, dt_ms_here, flow_map, flow_ts, flow_dt
 
         t0_us = t1_us
         trim_buffer()
 
     f_ev.close()
-    if use_gt:
-        f_gt.close()
-
-
 
 def mvsec_evs_iterator_adaptive(
     scenedir,
     side,
-    adaptive_slicer,          # object providing get_current_dt_ms() and update()
+    adaptive_slicer,          # object providing get_current_dt_ms()
     H=260,
     W=346,
     rectify=True,
+    gt_mode="20hz",           # NEW: "20hz", "dt1", "dt4"
     max_events_loaded=DEFAULT_MAX_EVENTS_LOADED,
     batch_events=DEFAULT_BATCH_EVENTS,
 ):
     """
     Adaptive slicing MVSEC iterator.
-    Uses adaptive_slicer.get_current_dt_ms() at every step.
-
+    Supports GT at:
+        - 20Hz  (original MVSEC flow_dist)
+        - dt=1  (upsampled flow)
+        - dt=4  (downsampled flow)
+    
     Yields:
         event_frame,
         t_us,
         dt_ms,
         flow_map,
-        ts_gt,
+        ts_gt_us,
         dt_gt_ms
     """
 
-    print(f"[MVSEC] Streaming ADAPTIVE events+GT from {scenedir}, side={side}")
+    print(f"[MVSEC-ADAPTIVE] Streaming from {scenedir}, GT={gt_mode}")
 
     # ---------------------------------------------------------
     # Load main event HDF5
@@ -326,31 +344,87 @@ def mvsec_evs_iterator_adaptive(
     h5_main = glob.glob(os.path.join(scenedir, "*_data.hdf5"))
     assert len(h5_main) == 1
     f_ev = h5py.File(h5_main[0], "r")
+
     evs = f_ev[f"davis/{side}/events"]
     N = evs.shape[0]
 
-    # Rectification map
     rectify_map = read_rmap(os.path.join(scenedir, f"rectify_map_{side}.h5"), H=H, W=W)
 
-    # ---------------------------------------------------------
-    # Optional GT flow
-    # ---------------------------------------------------------
-    h5_gt = glob.glob(os.path.join(scenedir, "*_gt.hdf5"))
-    use_gt = len(h5_gt) > 0
+    # =====================================================================
+    # SELECT WHICH GT WE USE  (20Hz, dt=1, or dt=4)
+    # =====================================================================
+    flow_dset = None
+    flow_ts_us = None
+    dt_mode = None
 
-    if use_gt:
+    if gt_mode == "20hz":
+        print("[GT] Using *_gt.hdf5 (20Hz)")
+        h5_gt = glob.glob(os.path.join(scenedir, "*_gt.hdf5"))
+        assert len(h5_gt) == 1
         f_gt = h5py.File(h5_gt[0], "r")
-        flow_dset = f_gt[f"davis/{side}/flow_dist"]
-        flow_ts   = f_gt[f"davis/{side}/flow_dist_ts"][:]  # seconds
-        flow_ts_us = (flow_ts * 1e6).astype(np.int64)
-        print(f"[MVSEC][Adaptive] GT flow streaming ready, N_gt={len(flow_ts_us)}")
+
+        flow_dset = f_gt[f"davis/{side}/flow_dist"]  # shape (Ngt, 2, H, W)
+        ts_sec = f_gt[f"davis/{side}/flow_dist_ts"][:]
+        flow_ts_us = (ts_sec * 1e6).astype(np.int64)
+        dt_mode = "20hz"
+
+    elif gt_mode in ("dt1", "dt4"):
+        dt = 1 if gt_mode == "dt1" else 4
+        dt_mode = f"dt={dt}"
+        print(f"[GT] Using scene.h5 → flow/{dt_mode}")
+
+        h5_dt = glob.glob(os.path.join(scenedir, "*.h5"))
+        assert len(h5_dt) == 1
+        f_gt = h5py.File(h5_dt[0], "r")
+
+        group = f_gt[f"flow/{dt_mode}"]
+
+        # sorted list of datasets (flow_00000000, flow_00000001, ...)
+        flow_keys = sorted([k for k in group.keys() if k != "timestamps"])
+        flow_dset = [group[k] for k in flow_keys]
+
+        # timestamps: (N,2) → prev_t, cur_t
+        ts_pairs = group["timestamps"][:]
+        flow_ts_us = (ts_pairs[:, 1] * 1e6).astype(np.int64)  # use end timestamp as ground-truth time
+
     else:
-        flow_dset = None
-        flow_ts_us = None
-        print("[MVSEC][Adaptive] No GT flow found.")
+        raise ValueError("gt_mode must be '20hz', 'dt1', or 'dt4'")
+
+    print(f"[GT] Loaded {len(flow_ts_us)} flow timestamps.")
+
 
     # ---------------------------------------------------------
-    # Streaming buffer
+    # Function to load GT lazily (without RAM explosion)
+    # ---------------------------------------------------------
+    def load_gt_for(t_us):
+        """Return nearest GT flow and its timestamp."""
+        idx = np.searchsorted(flow_ts_us, t_us, side="left")
+
+        if idx == 0:
+            best = 0
+        elif idx >= len(flow_ts_us):
+            best = len(flow_ts_us) - 1
+        else:
+            b = idx - 1
+            a = idx
+            best = b if abs(flow_ts_us[b] - t_us) <= abs(flow_ts_us[a] - t_us) else a
+
+        # Load only the chosen map
+        if dt_mode == "20hz":
+            flow_map = flow_dset[best]           # (2,H,W)
+        else:
+            flow_map = flow_dset[best][...]     # dataset object to array
+
+        # Compute dt between GT samples
+        dt_gt_ms = None
+        if best > 0:
+            dt_gt_ms = (flow_ts_us[best] - flow_ts_us[best - 1]) * 1e-3
+
+        return flow_map, flow_ts_us[best], dt_gt_ms
+
+
+    # ---------------------------------------------------------
+    # EVENT STREAMING BUFFER
     # ---------------------------------------------------------
     x_buf = np.empty(0, dtype=np.uint16)
     y_buf = np.empty(0, dtype=np.uint16)
@@ -361,17 +435,18 @@ def mvsec_evs_iterator_adaptive(
     load_cursor = 0
 
     def load_more():
+        """Load next chunk of events."""
         nonlocal load_cursor, x_buf, y_buf, ts_us_buf, pol_buf
         if load_cursor >= N:
             return False
+
         end = min(load_cursor + batch_events, N)
+        batch = evs[load_cursor:end]
 
-        x = evs[load_cursor:end, 0].astype(np.uint16)
-        y = evs[load_cursor:end, 1].astype(np.uint16)
-        ts = evs[load_cursor:end, 2].astype(np.float64)
-        p  = evs[load_cursor:end, 3].astype(np.int8)
-
-        ts_us = (ts * 1e6).astype(np.int64)
+        x = batch[:, 0].astype(np.uint16)
+        y = batch[:, 1].astype(np.uint16)
+        ts_us = (batch[:, 2] * 1e6).astype(np.int64)
+        p = batch[:, 3].astype(np.int8)
 
         x_buf = np.concatenate([x_buf, x])
         y_buf = np.concatenate([y_buf, y])
@@ -382,6 +457,7 @@ def mvsec_evs_iterator_adaptive(
         return True
 
     def trim_buffer():
+        """Trim old events once buffer exceeds limit."""
         nonlocal abs_start, x_buf, y_buf, ts_us_buf, pol_buf
         extra = len(x_buf) - max_events_loaded
         if extra > 0:
@@ -391,34 +467,6 @@ def mvsec_evs_iterator_adaptive(
             pol_buf = pol_buf[extra:]
             abs_start += extra
 
-    # ---------------------------------------------------------
-    # Find GT closest to timestamp
-    # ---------------------------------------------------------
-    def load_gt_for(t_us):
-        if not use_gt:
-            return None, None, None
-
-        idx = np.searchsorted(flow_ts_us, t_us, side="left")
-
-        if idx == 0:
-            best = 0
-        elif idx == len(flow_ts_us):
-            best = idx - 1
-        else:
-            before = idx - 1
-            after  = idx
-            if abs(flow_ts_us[before] - t_us) <= abs(flow_ts_us[after] - t_us):
-                best = before
-            else:
-                best = after
-
-        flow_map = flow_dset[best]            # load only this map
-        ts_gt = flow_ts_us[best]
-        dt_gt_ms = None
-        if best > 0:
-            dt_gt_ms = (flow_ts_us[best] - flow_ts_us[best - 1]) * 1e-3
-
-        return flow_map, ts_gt, dt_gt_ms
 
     # ---------------------------------------------------------
     # INITIAL LOAD
@@ -426,21 +474,23 @@ def mvsec_evs_iterator_adaptive(
     if load_cursor == 0:
         load_more()
 
-    # absolute time range
     t_end_us = int(float(evs[-1, 2]) * 1e6)
     t0_us = ts_us_buf[0]
 
-    # ---------------------------------------------------------
-    # ADAPTIVE LOOP
-    # ---------------------------------------------------------
+
+    # ================================================================
+    #                 ADAPTIVE SLICING LOOP
+    # ================================================================
+    print("[MVSEC-ADAPTIVE] Starting adaptive loop...")
+
     while t0_us < t_end_us:
 
-        # 1. get dt_ms from PID controller
+        # 1) get dt from adaptive controller
         dt_ms = adaptive_slicer.get_current_dt_ms()
         dt_us = int(dt_ms * 1000)
         t1_us = t0_us + dt_us
 
-        # 2. Make sure buffer covers t1_us
+        # 2) ensure buffer covers t1_us
         while len(ts_us_buf) == 0 or ts_us_buf[-1] < t1_us:
             if not load_more():
                 break
@@ -449,7 +499,7 @@ def mvsec_evs_iterator_adaptive(
         if len(ts_us_buf) == 0:
             break
 
-        # 3. slice events
+        # 3) find event slice within buffer
         start = np.searchsorted(ts_us_buf, t0_us, side="left")
         end   = np.searchsorted(ts_us_buf, t1_us, side="left")
 
@@ -458,29 +508,28 @@ def mvsec_evs_iterator_adaptive(
             by = y_buf[start:end]
             bp = pol_buf[start:end]
 
+            # rectification
             if rectify:
                 rect = rectify_map[by.astype(np.int32), bx.astype(np.int32)]
-                xs = rect[:,0]
-                ys = rect[:,1]
+                xs = rect[:, 0]
+                ys = rect[:, 1]
             else:
-                xs = bx
-                ys = by
+                xs, ys = bx, by
 
             event_frame = to_event_frame(xs, ys, bp, H, W)
 
-            # 4. load GT for t0_us
-            flow_map, ts_gt, dt_gt_ms = load_gt_for(t0_us)
+            # 4) load GT lazily
+            flow_map, ts_gt_us, gt_dt_ms = load_gt_for(t0_us)
 
-            # 5. OUTPUT
-            yield event_frame, t0_us, dt_ms, flow_map, ts_gt, dt_gt_ms
+            #reshape the output flow to eventually 2, H, W
+            if flow_map.shape[2] == 2:
+                flow_map = flow_map.transpose(2, 0, 1)
 
-            # 6. update PID using your flow vectors (external)
-            #    This is done outside in VisionNode
+            # 5) yield sample
+            yield event_frame, t0_us, dt_ms, flow_map, ts_gt_us, gt_dt_ms
 
-        # 7. advance window
+        # 6) next window
         t0_us = t1_us
         trim_buffer()
 
     f_ev.close()
-    if use_gt:
-        f_gt.close()

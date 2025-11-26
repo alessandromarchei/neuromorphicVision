@@ -25,8 +25,9 @@ ACCUMULATOR:
   ignorePolarity: true
 
 SLICING:
-  type: "adaptive"    # "mvsec" | "fixed" | "adaptive"
+  type: "mvsec"    # "mvsec" | "fixed" | "adaptive"
   dt_ms: 10        # used only if type == "fixed"
+  gt_mode : "dt4" #use "20hz", "dt1" or "dt4"
 
 
 CAMERA:
