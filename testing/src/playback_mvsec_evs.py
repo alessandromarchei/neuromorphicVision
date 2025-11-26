@@ -125,8 +125,6 @@ class VisionNodeEventsPlayback:
         # pre-carica eventi per il caso adaptive
         self._initializeEventDataAdaptive()
 
-        # pre-carica GT
-        self._initializeGTFlow()
 
         #print on screen the self.config for verification
         print("Loaded configuration:")
@@ -243,86 +241,6 @@ class VisionNodeEventsPlayback:
         print(f"[VisionNodeEventsPlayback] Loaded {len(self.all_evs)} events, ts range [{self.ts_start}, {self.ts_end}]")
 
     # --------------------------------------------------------
-    # Preload GT optical flow
-    # --------------------------------------------------------
-    def _initializeGTFlow(self):
-        """
-        Cerca *_gt.hdf5 nella stessa cartella dello scene path
-        e carica davis/left/flow_dist e flow_dist_ts.
-        GT flow samples at around 20 Hz
-        Default MVSEC optical flow is around 30 fps (so apply scaling)
-        """
-        pattern = os.path.join(self.events_dir, "*_gt.hdf5")
-        files = glob.glob(pattern)
-
-        if len(files) == 0:
-            print("[VisionNodeEventsPlayback] No GT file (*_gt.hdf5) found. GT disabled.")
-            self.flow_gt = None
-            self.flow_gt_ts_us = None
-            return
-
-        gt_file = files[0]
-        print(f"[VisionNodeEventsPlayback] Loading GT flow from: {gt_file}")
-        f = h5py.File(gt_file, "r")
-
-        flow_path = f"davis/{self.side}/flow_dist"
-        ts_path = f"davis/{self.side}/flow_dist_ts"
-
-        if flow_path not in f or ts_path not in f:
-            print(f"[VisionNodeEventsPlayback] GT datasets not found in {gt_file}.")
-            self.flow_gt = None
-            self.flow_gt_ts_us = None
-            f.close()
-            return
-
-        self.flow_gt = f[flow_path][:]            # (N_gt, 2, H, W)
-        flow_gt_ts = f[ts_path][:]                # (N_gt,) in secondi
-        f.close()
-
-        self.flow_gt_ts_us = (flow_gt_ts * 1e6).astype(np.int64)
-
-        # ts_diff = list()
-        # for ts in len(self.flow_gt_ts_us):
-        #     if ts == len(self.flow_gt_ts_us):
-        #         break
-        #     ts_diff[ts] = self.flow_gt_ts_us[ts+1] - self.flow_gt_ts_us[ts]
-
-        # mean_dt_flow_ms = ts_diff.mean()
-        # print(f"Average dt for GT flow : {mean_dt_flow_ms*1000} ms")
-        # print(f"Average sample rate for GT flow : {1000000.0 / mean_dt_flow_ms} hz")
-
-        print(f"[VisionNodeEventsPlayback] GT flow loaded: {self.flow_gt.shape}, ts shape={self.flow_gt_ts_us.shape}")
-
-    # --------------------------------------------------------
-    # Helper: trova GT flow più vicino nel tempo
-    # --------------------------------------------------------
-    def _get_gt_flow(self, t_us):
-        """
-        Ritorna (flow_gt, ts_gt_us) più vicino a t_us,
-        oppure (None, None) se GT non disponibile.
-        """
-        if self.flow_gt is None or self.flow_gt_ts_us is None:
-            return None, None
-
-        ts_arr = self.flow_gt_ts_us
-        idx = np.searchsorted(ts_arr, t_us, side="left")
-
-        if idx == 0:
-            best = 0
-        elif idx >= len(ts_arr):
-            best = len(ts_arr) - 1
-        else:
-            # scegli il timestamp più vicino
-            before = idx - 1
-            after = idx
-            if abs(ts_arr[before] - t_us) <= abs(ts_arr[after] - t_us):
-                best = before
-            else:
-                best = after
-
-        return self.flow_gt[best], ts_arr[best]
-
-    # --------------------------------------------------------
     # RUN
     # --------------------------------------------------------
     def run(self):
@@ -340,8 +258,8 @@ class VisionNodeEventsPlayback:
     # RUN: fixed slicing con mvsec_evs_iterator
     # --------------------------------------------------------
     def _run_fixed_slicing(self):
-        print("[VisionNodeEventsPlayback] Running with FIXED slicing.")
-        print(f"Delta T = {self.fixed_dt_ms} ms")
+        print("[VisionNodeEventsPlayback] Running unified event+GT iterator.")
+
         iterator = mvsec_evs_iterator(
             self.events_dir,
             side=self.side,
@@ -351,21 +269,14 @@ class VisionNodeEventsPlayback:
             rectify=self.rectify
         )
 
-        for i, (event_frame, t_us, dt_ms) in enumerate(iterator):
+        for i, (event_frame, t_us, dt_ms, flow_map, ts_gt, dt_gt_ms) in enumerate(iterator):
             self.deltaTms = dt_ms
-
-            # GT per questo event frame (se disponibile)
-            self.current_gt_flow, self.current_gt_ts_us = self._get_gt_flow(t_us)
-            if self.current_gt_flow is not None:
-                # esempio: debug
-                print(f"[GT] Frame {i}, t={t_us} us, deltaT={self.deltaTms} ms, GT ts = {self.current_gt_ts_us} us, GT shape={self.current_gt_flow.shape}")
+            self.current_gt_flow = flow_map
+            self.current_gt_ts_us = ts_gt
+            self.dt_gt_flow_ms = dt_gt_ms
 
             self._processEventFrame(event_frame, t_us)
             self.frameID += 1
-
-        if self.visualizeImage:
-            cv2.destroyAllWindows()
-        print("[VisionNodeEventsPlayback] Finished fixed-slicing run.")
 
     # --------------------------------------------------------
     # RUN: adaptive slicing con PID
@@ -414,7 +325,6 @@ class VisionNodeEventsPlayback:
             self.deltaTms = dt_ms
 
             # GT per questo event frame (t0 us)
-            self.current_gt_flow, self.current_gt_ts_us = self._get_gt_flow(t0)
             if self.current_gt_flow is not None:
                 # esempio: debug
                 print(f"[GT] Frame {self.frameID}, t0={t0} us, GT ts = {self.current_gt_ts_us} us, GT shape={self.current_gt_flow.shape}")
