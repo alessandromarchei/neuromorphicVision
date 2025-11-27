@@ -2,7 +2,7 @@
 #MVSEC scene path
 EVENTS:
   scene : /home/alessandro/datasets/mvsec/outdoor_day1/
-  # scene: "/home/alessandro/datasets/mvsec/indoor_flying/indoor_flying3_data/"
+  # scene: "/home/alessandro/datasets/mvsec/indoor_flying/indoor_flying1_data/"
   side: "left"   #left 
   H: 260
   W: 346
@@ -65,26 +65,9 @@ LK:
 
 
 REJECTION_FILTER:
-  magnitudeThresholdPixel: 50   #magnitude threshold for the vectors. it is in PIXEL displacement
+  magnitudeThresholdPixel: 10   #magnitude threshold for the vectors. it is in PIXEL displacement
   boundThreshold: 1.50          #threshold for rejecting the vectors magnitude. it must be > 1.0
 
-
-#LOW PASS FILTER
-SMOOTHINGFILTER:
-  enable: true
-  type: 0   # 0 : COMPLEMENTARY FILTER, 1 : LOW PASS FILTER
-  lpfK: 0.7  #coefficient for the low pass filter. 0.5 is the default value
-  complementaryK: 2.3 #coefficient for the complementary filter.
-
-#altitude parameters
-ALTITUDE:
-  type: 0   # 0:average, 1:median
-  saturationValue: 45   #in meters, if values over this are computed, than saturate to this
-
-#safety parameters
-lidarMax : 0.0    #in meters. if lidar the lidar detects less than this, publish this value rather than the vision based altitude
-
-publishAltitudeFrequency: 50  #in Hz. IT MUST BE BETWEEN 30 and 50 Hz
 
 velocitySource : 0 # 0: airspped, 1: groundspeed
 

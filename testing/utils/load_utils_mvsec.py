@@ -256,7 +256,9 @@ def mvsec_evs_iterator(
             if flow_map.shape[2] == 2:
                 flow_map = flow_map.transpose(2, 0, 1)
             
-            flow_map = mask_outdoor_carhood(flow_map)
+            #if the scene is outdoor, mask the car hood
+            if "outdoor" in scenedir.lower():
+                flow_map, event_frame = mask_outdoor_carhood(flow_map, event_frame)
 
 
             yield event_frame, ts_us, dt_ms_here, flow_map, flow_ts, flow_dt, flow_id
@@ -306,8 +308,9 @@ def mvsec_evs_iterator(
             if flow_map.shape[2] == 2:
                 flow_map = flow_map.transpose(2, 0, 1)
 
-            flow_map = mask_outdoor_carhood(flow_map)
-            
+            if "outdoor" in scenedir.lower():
+                flow_map, event_frame = mask_outdoor_carhood(flow_map, event_frame)
+
             yield event_frame, t0_us, dt_ms_here, flow_map, flow_ts, flow_dt, flow_id
 
         t0_us = t1_us
@@ -533,7 +536,8 @@ def mvsec_evs_iterator_adaptive(
             if flow_map.shape[2] == 2:
                 flow_map = flow_map.transpose(2, 0, 1)
 
-            flow_map = mask_outdoor_carhood(flow_map)
+            if "outdoor" in scenedir.lower():
+                flow_map, event_frame = mask_outdoor_carhood(flow_map, event_frame)
 
             # 5) yield sample
             yield event_frame, t0_us, dt_ms, flow_map, ts_gt_us, gt_dt_ms, flow_id
@@ -545,11 +549,17 @@ def mvsec_evs_iterator_adaptive(
     f_ev.close()
 
 
-def mask_outdoor_carhood(flow_map):
+def mask_outdoor_carhood(flow_map, event_frame=None):
     """
     Removes the car-hood region for MVSEC outdoor sequences.
     flow_map must be (2, H, W).
+    event_frame must be (H, W) or None.
+    Returns cropped flow_map and event_frame (if provided).
     """
+    # Crop from row 193 to the end (bottom part)
     if flow_map.ndim == 3 and flow_map.shape[0] == 2:
-        flow_map[:, 193:, :] = 0
+        flow_map = flow_map[:, :193, :]
+    if event_frame is not None and event_frame.ndim == 2:
+        event_frame = event_frame[:193, :]
+        return flow_map, event_frame
     return flow_map
