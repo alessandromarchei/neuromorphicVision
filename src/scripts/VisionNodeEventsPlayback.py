@@ -23,7 +23,7 @@ from testing.utils.loss import compute_AEE
 
 
 # strutture dati e parametri (come nel tuo script a frame)
-from defs import (
+from src.scripts.defs import (
     FastParams,
     CameraParams,
     LKParams,
@@ -32,7 +32,7 @@ from defs import (
 )
 
 # funzioni di utilità per l'OF (uguali al tuo script a frame)
-from functions import (
+from src.scripts.functions import (
     randomlySampleKeypoints,
     scoreAndRankKeypointsUsingGradient,
     rejectOutliersFrame,
