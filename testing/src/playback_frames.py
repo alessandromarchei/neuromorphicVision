@@ -12,7 +12,7 @@ import threading
 # ------------------------------------------------------------------
 # Import data structures + parameters from defs.py
 # ------------------------------------------------------------------
-from defs import (
+from src.scripts.defs import (
     IMUData,
     VelocityData,
     FrameData,
@@ -26,7 +26,7 @@ from defs import (
 # ------------------------------------------------------------------
 # Import utility functions from functions.py
 # ------------------------------------------------------------------
-from functions import (
+from scripts.functions import (
     randomlySampleKeypoints,
     scoreAndRankKeypointsUsingGradient,
     rejectOutliersFrame,

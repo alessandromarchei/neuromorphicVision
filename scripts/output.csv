@@ -1,0 +1,1 @@
+timestamp,frameID,opticalFlow,featureDetection,totalProcessingTime,unfilteredAltitude,filteredAltitude,lidarData,distanceGround,rollAngle,pitchAngle,airspeed,groundspeed,vx,vy
