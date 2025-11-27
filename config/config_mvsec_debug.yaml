@@ -1,7 +1,7 @@
 #MVSEC CONFIG FILE
 EVENTS:
   # scene : /home/alessandro/datasets/mvsec/outdoor_day1/
-  scene: "/home/alessandro/datasets/mvsec/indoor_flying/indoor_flying3_data/"
+  scene: "/home/alessandro/datasets/mvsec/indoor_flying/indoor_flying1_data/"
   side: "left"   #left 
   H: 260
   W: 346
@@ -15,7 +15,7 @@ FAST:
   nonmaxSuppression: false
   gradientScoring:
     enable: true
-    desiredFeatures: 300
+    desiredFeatures: 100
 
 ACCUMULATOR:
   neutralPotential: 0.5
@@ -72,5 +72,5 @@ adaptiveSlicing:
   OFPixelSetpoint: 3  #
 
 #visualize image
-visualizeImage: false
+visualizeImage: true
 delayVisualize: 0

@@ -9,6 +9,7 @@ import os
 import torch.nn.functional as F
 from tqdm import tqdm
 import bisect
+import matplotlib.pyplot as plt
 
 from testing.utils.event_utils import to_event_frame
 
@@ -47,11 +48,18 @@ Our representation:
   - outdoor day1: starts at -1
   - indoor flying : starts at N > 0
 Total ≈ 13 bytes/event instead of 32 bytes/event.
+
+
+SKIP BLACK SCENES:
+indoor_flying1 :    ID flow valid   (120,2120)      FIRST GT FLOW MAP is 300 ms after first frame
+                    ID frames valid (130,2130)
 """
 
 # Default limits (can be overridden in function params)
 DEFAULT_MAX_EVENTS_LOADED = 1_000_000
 DEFAULT_BATCH_EVENTS = 200_000
+
+
 
 def read_rmap(rect_file, H=180, W=240):
     h5file = glob.glob(rect_file)[0]
@@ -100,7 +108,10 @@ def mvsec_evs_iterator(
     evs = f_ev[f"davis/{side}/events"]
     N = evs.shape[0]
 
-    rectify_map = read_rmap(os.path.join(scenedir, f"rectify_map_{side}.h5"), H=H, W=W)
+    if rectify == True:
+        rectify_map = read_rmap(os.path.join(scenedir, f"rectify_map_{side}.h5"), H=H, W=W)
+    else:
+        rectify_map = None
 
     # ---------------------------------------------------------
     # SELECT FLOW SOURCE
@@ -132,8 +143,6 @@ def mvsec_evs_iterator(
 
         ts_pairs = group["timestamps"][:]   # (N, 2) prev_t, cur_t
         flow_ts_us = (ts_pairs[:, 1] * 1e6).astype(np.int64)
-
-        f_gt_dt = f_gt  # for closing later
 
     else:
         raise ValueError("gt_mode must be: '20hz', 'dt1', 'dt4'")
@@ -223,6 +232,14 @@ def mvsec_evs_iterator(
             idxs = idxs[1:]
             img_ts_us = img_ts_us[1:]
 
+        # After loading image timestamps and GT timestamps
+        # plot_timeline_two_series(
+        #     img_ts_us,
+        #     flow_ts_us,
+        #     out_path=os.path.join("", "timeline_plot.png"),
+        #     title=f"Timeline – {os.path.basename(scenedir)}"
+        # )
+
         prev_end = 0
 
         for i, ts_us in enumerate(img_ts_us):
@@ -243,8 +260,11 @@ def mvsec_evs_iterator(
             by = y_buf[local0:local1]
             bp = pol_buf[local0:local1]
 
-            rect = rectify_map[by.astype(np.int32), bx.astype(np.int32)]
-            xs, ys = rect[:, 0], rect[:, 1]
+            if rectify:
+                rect = rectify_map[by.astype(np.int32), bx.astype(np.int32)]
+                xs, ys = rect[:, 0], rect[:, 1]
+            else:
+                xs, ys = bx, by
 
             event_frame = to_event_frame(xs, ys, bp, H, W)
             dt_ms_here = (ts_us_buf[local1 - 1] - ts_us_buf[local0]) * 1e-3
@@ -295,8 +315,13 @@ def mvsec_evs_iterator(
             by = y_buf[start:end]
             bp = pol_buf[start:end]
 
-            rect = rectify_map[by.astype(np.int32), bx.astype(np.int32)]
-            xs, ys = rect[:, 0], rect[:, 1]
+            if rectify:
+                rect = rectify_map[by.astype(np.int32), bx.astype(np.int32)]
+                xs, ys = rect[:, 0], rect[:, 1]
+            else:
+                xs, ys = bx, by
+
+
             event_frame = to_event_frame(xs, ys, bp, H, W)
 
             # GT nearest to t0_us
@@ -563,3 +588,56 @@ def mask_outdoor_carhood(flow_map, event_frame=None):
         event_frame = event_frame[:193, :]
         return flow_map, event_frame
     return flow_map
+
+
+
+def plot_timeline_two_series(img_ts_us, flow_ts_us, out_path=None, title="Timestamp Timeline"):
+    """
+    Plot two parallel horizontal timelines:
+      - img_ts_us   → timestamps of image events (int64 microseconds)
+      - flow_ts_us  → timestamps of ground-truth flow (int64 microseconds)
+
+    Converts timestamps to milliseconds from a common zero point.
+    """
+
+    if len(img_ts_us) == 0 or len(flow_ts_us) == 0:
+        print("[WARN] Empty timestamps, skipping timeline plot.")
+        return
+
+    # Convert to numpy
+    img_ts_us = np.array(img_ts_us, dtype=np.int64)
+    flow_ts_us = np.array(flow_ts_us, dtype=np.int64)
+
+    # Normalize: set t0 = global minimum
+    t0 = min(img_ts_us.min(), flow_ts_us.min())
+
+    img_ms = (img_ts_us - t0) * 1e-3
+    flow_ms = (flow_ts_us - t0) * 1e-3
+
+    #take only the first 100 points for visualization clarity
+    if len(img_ms) > 100:
+        img_ms = img_ms[:100]
+    if len(flow_ms) > 100:
+        flow_ms = flow_ms[:100]
+
+    # Create plot
+    plt.figure(figsize=(14, 4))
+
+    # Image timestamps (y=1)
+    plt.scatter(img_ms, np.ones_like(img_ms), s=15, label="Image Timestamps", color="tab:blue")
+
+    # Flow timestamps (y=0)
+    plt.scatter(flow_ms, np.zeros_like(flow_ms), s=15, label="Flow GT Timestamps", color="tab:orange")
+
+    # Styling
+    plt.yticks([0, 1], ["GT Flow", "Images"])
+    plt.xlabel("Time (ms from start)")
+    plt.title(title)
+    plt.grid(True, axis='x', linestyle="--", alpha=0.4)
+    plt.legend(loc="upper right")
+
+    if out_path is not None:
+        plt.savefig(out_path, dpi=150)
+        print(f"[TIMELINE] Saved timeline plot to {out_path}")
+
+    plt.close()

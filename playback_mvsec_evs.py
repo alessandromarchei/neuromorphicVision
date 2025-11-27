@@ -22,7 +22,7 @@ if __name__ == "__main__":
         os.makedirs(run_dir, exist_ok=True)
 
         # save YAML for reproducibility
-        os.system(f"cp {args.yaml} {os.path.join(run_dir, 'config_used.yaml')}")
+        os.system(f"cp {args.yaml} {os.path.join(run_dir, 'config.yaml')}")
 
         # create log file
         log_path = os.path.join(run_dir, "logs.log")
@@ -115,14 +115,5 @@ if __name__ == "__main__":
                     node.eval_Npoints[i],
                 ])
         dual_print(f"Saved CSV to: {csv_path}")
-
-        # ========= TXT FINAL REPORT =========
-        txt_path = os.path.join(run_dir, "results.txt")
-        with open(txt_path, "w") as ftxt:
-            for line in final_report:
-                ftxt.write(line + "\n")
-        dual_print(f"Saved final report to: {txt_path}")
-
+        
         log_file.close()
-
-    dual_print("All done.")
