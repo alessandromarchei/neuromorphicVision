@@ -164,8 +164,10 @@ def mvsec_evs_iterator(
         if best > 0:
             dt_ms = (flow_ts_us[best] - flow_ts_us[best - 1]) * 1e-3
 
+        flow_id = best
 
-        return flow_map, flow_ts_us[best], dt_ms
+
+        return flow_map, flow_ts_us[best], dt_ms, flow_id
 
 
     # ---------------------------------------------------------
@@ -248,13 +250,16 @@ def mvsec_evs_iterator(
             dt_ms_here = (ts_us_buf[local1 - 1] - ts_us_buf[local0]) * 1e-3
 
             # GT sample nearest to this image_ts
-            flow_map, flow_ts, flow_dt = load_gt_for(ts_us)
+            flow_map, flow_ts, flow_dt, flow_id = load_gt_for(ts_us)
 
             #reshape the output flow to eventually 2, H, W
             if flow_map.shape[2] == 2:
                 flow_map = flow_map.transpose(2, 0, 1)
+            
+            flow_map = mask_outdoor_carhood(flow_map)
 
-            yield event_frame, ts_us, dt_ms_here, flow_map, flow_ts, flow_dt
+
+            yield event_frame, ts_us, dt_ms_here, flow_map, flow_ts, flow_dt, flow_id
 
         f_ev.close()
         return
@@ -293,7 +298,7 @@ def mvsec_evs_iterator(
             event_frame = to_event_frame(xs, ys, bp, H, W)
 
             # GT nearest to t0_us
-            flow_map, flow_ts, flow_dt = load_gt_for(t0_us)
+            flow_map, flow_ts, flow_dt, flow_id = load_gt_for(t0_us)
 
             dt_ms_here = (ts_us_buf[end - 1] - ts_us_buf[start]) * 1e-3
 
@@ -301,8 +306,9 @@ def mvsec_evs_iterator(
             if flow_map.shape[2] == 2:
                 flow_map = flow_map.transpose(2, 0, 1)
 
-                
-            yield event_frame, t0_us, dt_ms_here, flow_map, flow_ts, flow_dt
+            flow_map = mask_outdoor_carhood(flow_map)
+            
+            yield event_frame, t0_us, dt_ms_here, flow_map, flow_ts, flow_dt, flow_id
 
         t0_us = t1_us
         trim_buffer()
@@ -419,8 +425,10 @@ def mvsec_evs_iterator_adaptive(
         dt_gt_ms = None
         if best > 0:
             dt_gt_ms = (flow_ts_us[best] - flow_ts_us[best - 1]) * 1e-3
+        
+        flow_id = best
 
-        return flow_map, flow_ts_us[best], dt_gt_ms
+        return flow_map, flow_ts_us[best], dt_gt_ms, flow_id
 
 
     # ---------------------------------------------------------
@@ -519,17 +527,29 @@ def mvsec_evs_iterator_adaptive(
             event_frame = to_event_frame(xs, ys, bp, H, W)
 
             # 4) load GT lazily
-            flow_map, ts_gt_us, gt_dt_ms = load_gt_for(t0_us)
+            flow_map, ts_gt_us, gt_dt_ms, flow_id = load_gt_for(t0_us)
 
             #reshape the output flow to eventually 2, H, W
             if flow_map.shape[2] == 2:
                 flow_map = flow_map.transpose(2, 0, 1)
 
+            flow_map = mask_outdoor_carhood(flow_map)
+
             # 5) yield sample
-            yield event_frame, t0_us, dt_ms, flow_map, ts_gt_us, gt_dt_ms
+            yield event_frame, t0_us, dt_ms, flow_map, ts_gt_us, gt_dt_ms, flow_id
 
         # 6) next window
         t0_us = t1_us
         trim_buffer()
 
     f_ev.close()
+
+
+def mask_outdoor_carhood(flow_map):
+    """
+    Removes the car-hood region for MVSEC outdoor sequences.
+    flow_map must be (2, H, W).
+    """
+    if flow_map.ndim == 3 and flow_map.shape[0] == 2:
+        flow_map[:, 193:, :] = 0
+    return flow_map

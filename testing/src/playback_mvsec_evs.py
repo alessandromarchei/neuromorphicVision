@@ -15,7 +15,7 @@ import cv2
 # iterator + util già esistenti (tuoi)
 from testing.utils.load_utils_mvsec import mvsec_evs_iterator, read_rmap, mvsec_evs_iterator_adaptive
 from testing.utils.event_utils import to_event_frame
-from testing.utils.viz_utils import visualize_image, visualize_gt_flow
+from testing.utils.viz_utils import visualize_image, visualize_gt_flow, visualize_filtered_flow
 from testing.utils.loss import compute_AEE
 
 
@@ -71,6 +71,16 @@ class VisionNodeEventsPlayback:
         self.flowVectors = []
         self.filteredFlowVectors = []
 
+        # ---- Evaluation logs ----
+        self.eval_AEE = []
+        self.eval_outliers = []
+        self.eval_dt_ms = []
+        self.eval_dtgt_ms = []
+        self.eval_Npoints = []
+        self.eval_frameID = []
+        self.eval_timestamp = []
+
+
         self.ofTime = 0.0
         self.featureDetectionTime = 0.0
 
@@ -83,6 +93,7 @@ class VisionNodeEventsPlayback:
         self.current_gt_flow = None
         self.current_gt_ts_us = None
         self.dt_gt_flow_ms = None
+        self.current_flow_gt_id = 0
 
         # load config
         self._loadParametersFromYAML(yaml_path)
@@ -199,6 +210,76 @@ class VisionNodeEventsPlayback:
         if "delayVisualize" in self.config:
             self.delayVisualize = int(self.config["delayVisualize"])
 
+    def printFinalReport(self):
+        if len(self.eval_AEE) == 0:
+            print("\n[FINAL REPORT] No valid flow comparisons found.\n")
+            return
+
+        AEE = np.array(self.eval_AEE)
+        OUT = np.array(self.eval_outliers)
+        DT  = np.array(self.eval_dt_ms)
+        DTGT = np.array(self.eval_dtgt_ms)
+        NPTS = np.array(self.eval_Npoints)
+
+        print("\n============================================")
+        print("              FINAL EVALUATION REPORT       ")
+        print("============================================")
+        print(f"Total valid frames: {len(AEE)}")
+        print("--------------------------------------------")
+        print(f"Mean AEE             : {AEE.mean():.4f}")
+        print(f"Median AEE           : {np.median(AEE):.4f}")
+        print(f"Min AEE              : {AEE.min():.4f}")
+        print(f"Max AEE              : {AEE.max():.4f}")
+        print("--------------------------------------------")
+        print(f"Mean Outliers (%)    : {(OUT.mean()*100):.2f}")
+        print(f"Median Outliers (%)  : {(np.median(OUT)*100):.2f}")
+        print("--------------------------------------------")
+        print(f"Mean Event dt (ms)   : {DT.mean():.3f}")
+        print(f"Mean GT dt (ms)      : {DTGT.mean():.3f}")
+        print("--------------------------------------------")
+        print(f"Mean #points/frame   : {NPTS.mean():.2f}")
+        print("============================================\n")
+
+
+    def cleanNaNEntries(self):
+        """Remove all indices where any logged quantity contains NaN."""
+
+        # Stack everything in a dict to generalize
+        logs = {
+            "AEE": self.eval_AEE,
+            "OUT": self.eval_outliers,
+            "DT": self.eval_dt_ms,
+            "DTGT": self.eval_dtgt_ms,
+            "NPTS": self.eval_Npoints,
+            "FRAME": self.eval_frameID,
+            "TS": self.eval_timestamp,
+        }
+
+        # Convert all lists → numpy arrays
+        logs_np = {k: np.array(v) for k, v in logs.items()}
+
+        # Create mask of valid indices (no nan in ANY array)
+        mask = np.ones(len(self.eval_AEE), dtype=bool)
+
+        for k, arr in logs_np.items():
+            mask &= ~np.isnan(arr)
+
+        # Apply mask back to all lists
+        for k, arr in logs_np.items():
+            logs_np[k] = arr[mask]
+
+        # Assign back
+        self.eval_AEE = logs_np["AEE"].tolist()
+        self.eval_outliers = logs_np["OUT"].tolist()
+        self.eval_dt_ms = logs_np["DT"].tolist()
+        self.eval_dtgt_ms = logs_np["DTGT"].tolist()
+        self.eval_Npoints = logs_np["NPTS"].tolist()
+        self.eval_frameID = logs_np["FRAME"].tolist()
+        self.eval_timestamp = logs_np["TS"].tolist()
+
+        # Debug print
+        print(f"[CLEAN] Removed {mask.size - mask.sum()} NaN entries.")
+
     # --------------------------------------------------------
     # Feature detector
     # --------------------------------------------------------
@@ -271,11 +352,12 @@ class VisionNodeEventsPlayback:
             gt_mode=self.gt_mode
         )
 
-        for i, (event_frame, t_us, dt_ms, flow_map, ts_gt, dt_gt_ms) in enumerate(iterator):
+        for i, (event_frame, t_us, dt_ms, flow_map, ts_gt, dt_gt_ms, flow_id) in enumerate(iterator):
             self.deltaTms = dt_ms
             self.current_gt_flow = flow_map
             self.current_gt_ts_us = ts_gt
             self.dt_gt_flow_ms = dt_gt_ms
+            self.current_flow_gt_id = flow_id
 
             self._processEventFrame(event_frame, t_us)
             self.frameID += 1
@@ -300,12 +382,14 @@ class VisionNodeEventsPlayback:
             dt_ms,
             flow_map,
             ts_gt,
-            dt_gt_ms) in iterator:
+            dt_gt_ms,
+            flow_id) in iterator:
 
             self.deltaTms = dt_ms
             self.current_gt_flow = flow_map
             self.current_gt_ts_us = ts_gt
             self.dt_gt_flow_ms = dt_gt_ms
+            self.current_flow_gt_id = flow_id
 
             # Process frame (LK + FAST)
             self._processEventFrame(event_frame, t_us)
@@ -348,6 +432,7 @@ class VisionNodeEventsPlayback:
             visualize_gt_flow(self.current_gt_flow, self.currFrame, win_name="GT Flow", apply_mask=False)
             visualize_gt_flow(self.flow_prediction_map, self.currFrame, win_name="GT Flow Prediction", apply_mask=False)
             visualize_image(self.currFrame,self.currPoints,self.prevPoints,self.status)
+            visualize_filtered_flow(self.currFrame, self.filteredFlowVectors, win_name="OF_filtered")
             cv2.waitKey(self.delayVisualize)
 
 
@@ -456,14 +541,29 @@ class VisionNodeEventsPlayback:
             self.flow_prediction_map[1][y_coord][x_coord] = point.deltaY
 
         # #apply AEE evaluation
-        # #TODO : fix 
         if self.deltaTms is not None and self.dt_gt_flow_ms is not None:
 
-            AEE, outlier_percentage, N_points = compute_AEE(estimated_flow=self.flow_prediction_map, gt_flow=self.current_gt_flow,
-                    dt_input_ms=self.deltaTms, dt_gt_ms=self.dt_gt_flow_ms)
-        
-            print(f"AEE : {AEE:.3f}, outlier percentages : {outlier_percentage*100.0:.3f}%, Event frame dt : {self.deltaTms:.3f} ms, GT Flow dt : {self.dt_gt_flow_ms:.3f} ms")
-        
+            AEE, outlier_percentage, N_points = compute_AEE(
+                estimated_flow=self.flow_prediction_map,
+                gt_flow=self.current_gt_flow,
+                dt_input_ms=self.deltaTms,
+                dt_gt_ms=self.dt_gt_flow_ms
+            )
+
+            # ----- LOGGING -----
+            self.eval_AEE.append(AEE)
+            self.eval_outliers.append(outlier_percentage)
+            self.eval_dt_ms.append(self.deltaTms)
+            self.eval_dtgt_ms.append(self.dt_gt_flow_ms)
+            self.eval_Npoints.append(N_points)
+            self.eval_frameID.append(self.frameID)
+            self.eval_timestamp.append(self.current_gt_ts_us)
+
+            print(f"[EVAL] Frame {self.frameID:05d} | "
+                f"AEE={AEE:.3f}, Outliers={outlier_percentage*100.0:.2f}%, "
+                f"dt={self.deltaTms:.2f} ms, gt_dt={self.dt_gt_flow_ms:.2f} ms, "
+                f"N={N_points}, GT FLOW ID={self.current_flow_gt_id}")
+
 
 # ============================================================
 # MAIN
@@ -474,4 +574,6 @@ if __name__ == "__main__":
 
     node = VisionNodeEventsPlayback(yaml_file)
     node.run()
+    node.cleanNaNEntries()
+    node.printFinalReport()
     print("All done.")

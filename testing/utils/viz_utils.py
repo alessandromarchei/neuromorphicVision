@@ -16,6 +16,25 @@ def visualize_image(currFrame, currPoints, prevPoints, status):
     cv2.imshow("OF_raw", flowVis)
     # cv2.waitKey(delay)
 
+def visualize_filtered_flow(currFrame, filtered_vectors, win_name="OF_filtered"):
+    """
+    Visualizza i vettori filtrati usando lo stesso stile di visualize_image(),
+    ma con colore blu.
+    """
+    # Converti a BGR
+    flowVis = cv2.cvtColor(currFrame, cv2.COLOR_GRAY2BGR)
+
+    for fv in filtered_vectors:
+        # P1 = posizione precedente (x,y)
+        # P2 = posizione corrente (x,y)
+        p1 = tuple(map(int, fv.position))
+        p2 = tuple(map(int, fv.nextPosition))
+
+        # Blu (B,G,R) = (255, 0, 0)
+        cv2.arrowedLine(flowVis, p1, p2, (255, 0, 0), 2)
+
+    cv2.imshow(win_name, flowVis)
+
 def visualize_gt_flow(flow_gt, event_frame, win_name="GT Flow", apply_mask=True):
     """
     Visualizza un optical flow ground-truth (2,H,W) usando HSV:
