@@ -5,10 +5,13 @@ set -e
 #           CONFIGURATION SECTION
 ##############################################
 
-YAML_FILE="config/config_mvsec_20hz.yaml"
-PY_SCRIPT="playback_mvsec_evs.py"          # <--- il tuo script python
-MAX_PARALLEL=3                      # max jobs in parallelo
-SLEEP_BETWEEN_EDIT=5                # sec
+BASE_YAML="config/config_mvsec_dt4.yaml"
+TMP_DIR="tmp_configs"
+PY_SCRIPT="playback_mvsec_evs.py"
+MAX_PARALLEL=3
+SLEEP_BETWEEN_EDIT=0   # now unnecessary
+
+mkdir -p "$TMP_DIR"
 
 # Dataset list
 DATASETS=(
@@ -18,7 +21,6 @@ DATASETS=(
     "/home/alessandro/datasets/mvsec/outdoor_day1/"
 )
 
-# Just labels for run IDs
 DATASET_NAMES=(
     "indoor1"
     "indoor2"
@@ -27,8 +29,6 @@ DATASET_NAMES=(
 )
 
 # Sweep parameters
-# FEATURES_LIST=(100 150 200 250 300)
-# MAG_LIST=(10 20)
 FEATURES_LIST=(200)
 MAG_LIST=(10)
 
@@ -37,25 +37,22 @@ MAG_LIST=(10)
 ##############################################
 
 edit_yaml() {
-    local scene_path="$1"
-    local desired_features="$2"
-    local mag_thresh="$3"
+    local yaml_file="$1"
+    local scene_path="$2"
+    local desired_features="$3"
+    local mag_thresh="$4"
 
-    # Usa sed per aggiornare i parametri
-    sed -i "s|scene:.*|scene: \"$scene_path\"|" "$YAML_FILE"
-    sed -i 's|^[[:space:]]*use_valid_frame_range:.*|  use_valid_frame_range: false|' "$YAML_FILE"  #use the full scene, no cuts
-    sed -i "s|desiredFeatures:.*|desiredFeatures: $desired_features|" "$YAML_FILE"
-    sed -i "s|magnitudeThresholdPixel:.*|magnitudeThresholdPixel: $mag_thresh|" "$YAML_FILE"
-
-    #set visualizeImage to false to speed up
-    sed -i "s|visualizeImage:.*|visualizeImage: false|" "$YAML_FILE"
-    sed -i "s|type:.*|type: mvsec|" "$YAML_FILE"
-    sed -i "s|gt_mode:.*|gt_mode: 20hz|" "$YAML_FILE"
+    sed -i "s|scene:.*|scene: \"$scene_path\"|" "$yaml_file"
+    sed -i "s|desiredFeatures:.*|desiredFeatures: $desired_features|" "$yaml_file"
+    sed -i "s|magnitudeThresholdPixel:.*|magnitudeThresholdPixel: $mag_thresh|" "$yaml_file"
+    sed -i "s|visualizeImage:.*|visualizeImage: false|" "$yaml_file"
+    sed -i "s|type:.*|type: mvsec|" "$yaml_file"
+    sed -i "s|gt_mode:.*|gt_mode: dt4|" "$yaml_file"
+    sed -i "s|use_valid_frame_range:.*|use_valid_frame_range: false|" "$yaml_file"  #remove initial landing & takeoff scenes
     
 }
 
 wait_for_slots() {
-    # assicura massimo N processi
     while [ "$(jobs -rp | wc -l)" -ge "$MAX_PARALLEL" ]; do
         sleep 1
     done
@@ -72,7 +69,7 @@ for idx in "${!DATASETS[@]}"; do
     for feat in "${FEATURES_LIST[@]}"; do
         for mag in "${MAG_LIST[@]}"; do
 
-            run_id="mvsec_${dataset_name}_feat${feat}_mag${mag}_20hz"
+            run_id="mvsec_${dataset_name}_feat${feat}_mag${mag}"
 
             echo "================================================================="
             echo "RUNNING: $run_id"
@@ -81,23 +78,23 @@ for idx in "${!DATASETS[@]}"; do
             echo "MagnitudeThresh: $mag"
             echo "================================================================="
 
-            # 1) Free slot if too many parallel jobs
+            # Wait for a free parallel slot
             wait_for_slots
 
-            # 2) Edit YAML
-            edit_yaml "$dataset" "$feat" "$mag"
+            # UNIQUE YAML COPY FOR THIS JOB
+            yaml_job="${TMP_DIR}/${run_id}.yaml"
+            cp "$BASE_YAML" "$yaml_job"
 
-            # 3) Wait small delay to avoid file race conditions
-            sleep "$SLEEP_BETWEEN_EDIT"
+            # Modify only this dedicated YAML file
+            edit_yaml "$yaml_job" "$dataset" "$feat" "$mag"
 
-            # 4) Launch run in background
-            python3 "$PY_SCRIPT" --yaml "$YAML_FILE" --run "$run_id" --out_dir "runs_mvsec_20hz" &
+            # Launch job with dedicated YAML
+            python3 "$PY_SCRIPT" --yaml "$yaml_job" --run "$run_id" --out_dir "runs_mvsec_dt4" &
 
         done
     done
 done
 
-# Wait for all jobs
 wait
 
 echo "=========================================="

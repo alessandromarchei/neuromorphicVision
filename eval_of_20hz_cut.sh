@@ -27,10 +27,8 @@ DATASET_NAMES=(
 )
 
 # Sweep parameters
-# FEATURES_LIST=(100 150 200 250 300)
-# MAG_LIST=(10 20)
-FEATURES_LIST=(200)
-MAG_LIST=(10)
+FEATURES_LIST=(100 150 200 250 300)
+MAG_LIST=(10 20)
 
 ##############################################
 #              FUNCTIONS
@@ -43,7 +41,6 @@ edit_yaml() {
 
     # Usa sed per aggiornare i parametri
     sed -i "s|scene:.*|scene: \"$scene_path\"|" "$YAML_FILE"
-    sed -i 's|^[[:space:]]*use_valid_frame_range:.*|  use_valid_frame_range: false|' "$YAML_FILE"  #use the full scene, no cuts
     sed -i "s|desiredFeatures:.*|desiredFeatures: $desired_features|" "$YAML_FILE"
     sed -i "s|magnitudeThresholdPixel:.*|magnitudeThresholdPixel: $mag_thresh|" "$YAML_FILE"
 
@@ -51,6 +48,7 @@ edit_yaml() {
     sed -i "s|visualizeImage:.*|visualizeImage: false|" "$YAML_FILE"
     sed -i "s|type:.*|type: mvsec|" "$YAML_FILE"
     sed -i "s|gt_mode:.*|gt_mode: 20hz|" "$YAML_FILE"
+    sed -i "s|use_valid_frame_range:.*|use_valid_frame_range: true|" "$YAML_FILE"  #remove initial landing & takeoff scenes
     
 }
 
@@ -91,7 +89,7 @@ for idx in "${!DATASETS[@]}"; do
             sleep "$SLEEP_BETWEEN_EDIT"
 
             # 4) Launch run in background
-            python3 "$PY_SCRIPT" --yaml "$YAML_FILE" --run "$run_id" --out_dir "runs_mvsec_20hz" &
+            python3 "$PY_SCRIPT" --yaml "$YAML_FILE" --run "$run_id" --out_dir "runs_mvsec_20hz_cut" &
 
         done
     done

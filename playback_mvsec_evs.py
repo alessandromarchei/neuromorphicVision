@@ -12,13 +12,15 @@ if __name__ == "__main__":
                         help="Experiment name used for saving logs and plots inside runs/<name>/")
     parser.add_argument("--yaml", type=str, default="config/config_mvsec.yaml",
                         help="YAML config path.")
+    parser.add_argument("--out_dir", type=str, default="runs",
+                    help="Output directory for saving logs and plots.")
     args = parser.parse_args()
 
     # -------------------------------------------------------
     # 1) RUN DIRECTORY HANDLING  (OPTIONAL)
     # -------------------------------------------------------
     if args.run:
-        run_dir = os.path.join("runs", args.run)
+        run_dir = os.path.join(args.out_dir, args.run)
         os.makedirs(run_dir, exist_ok=True)
 
         # save YAML for reproducibility

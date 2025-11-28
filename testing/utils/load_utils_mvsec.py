@@ -161,6 +161,7 @@ def mvsec_evs_iterator(
         assert len(h5_dt) == 1
         f_gt = h5py.File(h5_dt[0], "r")
 
+        #the .h5 contains also the events, in ["events"]["ts"] or "ps", "xs", "ys". content is identical to the *_data.hdf5
         group = f_gt[f"flow/dt={dt}"]
         flow_dset = [k for k in group.keys() if k != "timestamps"]
         flow_dset.sort()
@@ -267,20 +268,47 @@ def mvsec_evs_iterator(
 
         prev_end = 0
 
-        for i, ts_us in enumerate(img_ts_us):
+        i = 0
+        while i < len(img_ts_us):
 
+            # ------------------------------------------------------------------
+            # VALID FRAME RANGE
+            # ------------------------------------------------------------------
             if valid_frame_range is not None:
                 start_i, end_i = valid_frame_range
                 if i < start_i:
+                    i += 1
                     continue
                 if i > end_i:
                     break
 
-            idx1 = int(idxs[i])
-            idx0 = prev_end
-            prev_end = idx1
+            # ------------------------------------------------------------------
+            # DT LOGIC
+            # ------------------------------------------------------------------
+            if gt_mode == "dt4":
+                i_next = i + 4
+                if i_next >= len(img_ts_us):
+                    break
 
-            # Fill buffer
+                idx0 = int(idxs[i])
+                idx1 = int(idxs[i_next])
+                ts_us_for_gt = img_ts_us[i_next]
+                step = 4   # jump by 4 frames
+
+            else:
+                # standard MVSEC 20Hz / dt1
+                i_next = i + 1
+                if i_next >= len(img_ts_us):
+                    break
+
+                idx0 = int(idxs[i])
+                idx1 = int(idxs[i_next])
+                ts_us_for_gt = img_ts_us[i]
+                step = 1   # jump by 1 frame
+
+            # ------------------------------------------------------------------
+            # LOAD EVENTS BETWEEN idx0 → idx1
+            # ------------------------------------------------------------------
             while abs_start + len(ts_us_buf) < idx1:
                 if not load_more():
                     break
@@ -300,21 +328,29 @@ def mvsec_evs_iterator(
                 xs, ys = bx, by
 
             event_frame = to_event_frame(xs, ys, bp, H, W)
+
+            # actual dt_ms (APS[i] → APS[i+4] or → APS[i+1])
             dt_ms_here = (ts_us_buf[local1 - 1] - ts_us_buf[local0]) * 1e-3
 
-            # GT sample nearest to this image_ts
-            flow_map, flow_ts, flow_dt, flow_id = load_gt_for(ts_us)
+            # ------------------------------------------------------------------
+            # LOAD GT (aligned)
+            # ------------------------------------------------------------------
+            flow_map, flow_ts, flow_dt, flow_id = load_gt_for(ts_us_for_gt)
 
-            #reshape the output flow to eventually 2, H, W
             if flow_map.shape[2] == 2:
                 flow_map = flow_map.transpose(2, 0, 1)
-            
-            #if the scene is outdoor, mask the car hood
+
             if "outdoor" in scenedir.lower():
                 flow_map, event_frame = mask_outdoor_carhood(flow_map, event_frame)
 
+            # yield aligned sample
+            yield event_frame, ts_us_for_gt, dt_ms_here, flow_map, flow_ts, flow_dt, flow_id
 
-            yield event_frame, ts_us, dt_ms_here, flow_map, flow_ts, flow_dt, flow_id
+            # ------------------------------------------------------------------
+            # MOVE TO NEXT FRAME (1 or 4)
+            # ------------------------------------------------------------------
+            i += step
+
 
         f_ev.close()
         return
