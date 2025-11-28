@@ -113,6 +113,9 @@ class VisionNodeEventsPlayback:
         self.slicing_type = self.config["SLICING"]["type"]
         self.fixed_dt_ms  = self.config["SLICING"].get("dt_ms", None) if self.slicing_type == "fixed" else None
 
+        self.use_valid_frame_range = events_cfg.get("use_valid_frame_range", False)
+        print(f"[VisionNodeEventsPlayback] use_valid_frame_range = {self.use_valid_frame_range}")
+
         # controlla se adaptive
         self.use_adaptive = (self.slicing_type == "adaptive")
 
@@ -352,7 +355,8 @@ class VisionNodeEventsPlayback:
             H=self.H,
             W=self.W,
             rectify=self.rectify,
-            gt_mode=self.gt_mode
+            gt_mode=self.gt_mode,
+            use_valid_frame_range=self.use_valid_frame_range
         )
 
         for i, (event_frame, t_us, dt_ms, flow_map, ts_gt, dt_gt_ms, flow_id) in enumerate(iterator):
@@ -562,7 +566,10 @@ class VisionNodeEventsPlayback:
             self.eval_frameID.append(self.frameID)
             self.eval_timestamp.append(self.current_gt_ts_us)
 
-            print(f"[EVAL] Frame {self.frameID:05d} | "
-                f"AEE={AEE:.3f}, Outliers={outlier_percentage*100.0:.2f}%, "
-                f"dt={self.deltaTms:.2f} ms, gt_dt={self.dt_gt_flow_ms:.2f} ms, "
-                f"N={N_points}, GT FLOW ID={self.current_flow_gt_id}")
+
+            #print every 100 frames
+            if self.frameID % 100 == 0:
+                print(f"[EVAL] Frame {self.frameID:05d} | "
+                    f"AEE={AEE:.3f}, Outliers={outlier_percentage*100.0:.2f}%, "
+                    f"dt={self.deltaTms:.2f} ms, gt_dt={self.dt_gt_flow_ms:.2f} ms, "
+                    f"N={N_points}, GT FLOW ID={self.current_flow_gt_id}")

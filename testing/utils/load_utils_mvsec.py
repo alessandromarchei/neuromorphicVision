@@ -60,6 +60,16 @@ DEFAULT_MAX_EVENTS_LOADED = 1_000_000
 DEFAULT_BATCH_EVENTS = 200_000
 
 
+#valid ranges for each MVSEC scene, skipping frames where the drone is not moving (before landing and takeoff)
+
+VALID_FRAME_RANGES = {
+    "indoor_flying1": (130, 2130),
+    "indoor_flying2": (250, 2560),
+    "indoor_flying3": (200, 2850),
+    "outdoor_day1":   (0, 11750)
+}
+
+
 
 def read_rmap(rect_file, H=180, W=240):
     h5file = glob.glob(rect_file)[0]
@@ -68,6 +78,15 @@ def read_rmap(rect_file, H=180, W=240):
     assert rectify_map.shape == (H, W, 2)
     rmap.close()
     return rectify_map
+
+
+def get_valid_range_from_scene(scenedir):
+    scenedir_lower = scenedir.lower()
+    for key, rng in VALID_FRAME_RANGES.items():
+        if key in scenedir_lower:
+            print(f"[MVSEC] Auto-valid range detected for {key}: {rng}")
+            return rng
+    return None
 
 
 def mvsec_evs_iterator(
@@ -80,6 +99,7 @@ def mvsec_evs_iterator(
     gt_mode="20hz",  # NEW: "20hz" | "dt1" | "dt4"
     max_events_loaded=DEFAULT_MAX_EVENTS_LOADED,
     batch_events=DEFAULT_BATCH_EVENTS,
+    use_valid_frame_range=False,    
 ):
     """
     Streaming iterator that yields tuples:
@@ -99,6 +119,11 @@ def mvsec_evs_iterator(
 
     print(f"[MVSEC] Streaming from {scenedir}, side={side}, dT_ms={dT_ms}, GT={gt_mode}")
 
+    # Auto-detect valid frame range from scene name
+    if use_valid_frame_range is True:
+        valid_frame_range = get_valid_range_from_scene(scenedir)
+    else:
+        valid_frame_range = None
     # ---------------------------------------------------------
     # Load EVENTS from *_data.hdf5
     # ---------------------------------------------------------
@@ -243,6 +268,14 @@ def mvsec_evs_iterator(
         prev_end = 0
 
         for i, ts_us in enumerate(img_ts_us):
+
+            if valid_frame_range is not None:
+                start_i, end_i = valid_frame_range
+                if i < start_i:
+                    continue
+                if i > end_i:
+                    break
+
             idx1 = int(idxs[i])
             idx0 = prev_end
             prev_end = idx1
@@ -299,7 +332,19 @@ def mvsec_evs_iterator(
     t0_us = ts_us_buf[0]
     t_end_us = int(float(evs[-1, 2]) * 1e6)
 
+    frame_idx = 0
     while t0_us < t_end_us:
+
+        if valid_frame_range is not None:
+            start_i, end_i = valid_frame_range
+            if frame_idx < start_i:
+                frame_idx += 1
+                t0_us += dt_us
+                continue
+            if frame_idx > end_i:
+                break
+
+
         t1_us = t0_us + dt_us
 
         while len(ts_us_buf) == 0 or ts_us_buf[-1] < t1_us:
@@ -340,6 +385,8 @@ def mvsec_evs_iterator(
 
         t0_us = t1_us
         trim_buffer()
+
+        frame_idx += 1
 
     f_ev.close()
 

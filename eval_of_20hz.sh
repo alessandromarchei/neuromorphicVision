@@ -5,7 +5,7 @@ set -e
 #           CONFIGURATION SECTION
 ##############################################
 
-YAML_FILE="config/config_mvsec.yaml"
+YAML_FILE="config/config_mvsec_20hz.yaml"
 PY_SCRIPT="playback_mvsec_evs.py"          # <--- il tuo script python
 MAX_PARALLEL=3                      # max jobs in parallelo
 SLEEP_BETWEEN_EDIT=5                # sec
@@ -15,7 +15,7 @@ DATASETS=(
     "/home/alessandro/datasets/mvsec/indoor_flying/indoor_flying1_data/"
     "/home/alessandro/datasets/mvsec/indoor_flying/indoor_flying2_data/"
     "/home/alessandro/datasets/mvsec/indoor_flying/indoor_flying3_data/"
-    # "/home/alessandro/datasets/mvsec/outdoor_day1/"
+    "/home/alessandro/datasets/mvsec/outdoor_day1/"
 )
 
 # Just labels for run IDs
@@ -23,7 +23,7 @@ DATASET_NAMES=(
     "indoor1"
     "indoor2"
     "indoor3"
-    # "outdoor1"
+    "outdoor1"
 )
 
 # Sweep parameters
@@ -66,7 +66,7 @@ for idx in "${!DATASETS[@]}"; do
     for feat in "${FEATURES_LIST[@]}"; do
         for mag in "${MAG_LIST[@]}"; do
 
-            run_id="mvsec_${dataset_name}_feat${feat}_mag${mag}"
+            run_id="mvsec_${dataset_name}_feat${feat}_mag${mag}_20hz"
 
             echo "================================================================="
             echo "RUNNING: $run_id"
