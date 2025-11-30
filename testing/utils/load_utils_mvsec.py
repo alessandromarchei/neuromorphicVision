@@ -63,7 +63,7 @@ DEFAULT_BATCH_EVENTS = 200_000
 #valid ranges for each MVSEC scene, skipping frames where the drone is not moving (before landing and takeoff)
 
 VALID_FRAME_RANGES = {
-    "indoor_flying1": (200, 2130),  #TODO: change after the debugging adaptive slicing
+    "indoor_flying1": (180, 2130),  #TODO: change after the debugging adaptive slicing
     "indoor_flying2": (250, 2560),
     "indoor_flying3": (200, 2850),
     "indoor_flying4": (150, 580),
@@ -514,7 +514,16 @@ def mvsec_evs_iterator_adaptive(
         valid_end_ts = f_ev[f"davis/{side}/image_raw_ts"][valid_end_idx] * 1e6  # in us
         
     else:
-        valid_frame_range = None
+        valid_frame_range = get_valid_range_from_scene(scenedir)
+        if valid_frame_range is not None:
+            print(f"[MVSEC-ADAPTIVE] Valid range is available but not enforced: {valid_frame_range}")
+            valid_start_idx, valid_end_idx = valid_frame_range
+            valid_start_ts = f_ev[f"davis/{side}/image_raw_ts"][valid_start_idx] * 1e6
+            valid_end_ts   = f_ev[f"davis/{side}/image_raw_ts"][valid_end_idx] * 1e6
+        else:
+            valid_start_ts = -np.inf
+            valid_end_ts = np.inf
+
 
     # ---------------------------------------------------------
     # Function to load GT lazily (without RAM explosion)
@@ -610,7 +619,7 @@ def mvsec_evs_iterator_adaptive(
 
 
     #skip directly to valid frist frame timestamp and set t_end_us accordingly
-    if valid_frame_range is not None:
+    if valid_frame_range is not None and use_valid_frame_range is True:
         t0_us = int(valid_start_ts)
         t_end_us = int(valid_end_ts)
 
@@ -661,7 +670,9 @@ def mvsec_evs_iterator_adaptive(
                 flow_map, event_frame = mask_outdoor_carhood(flow_map, event_frame)
 
             # 5) yield sample
-            yield event_frame, t0_us, dt_ms, flow_map, ts_gt_us, gt_dt_ms, flow_id
+            in_valid_frame_range = valid_start_ts <= t0_us <= valid_end_ts
+
+            yield event_frame, t0_us, dt_ms, flow_map, ts_gt_us, gt_dt_ms, flow_id, in_valid_frame_range
 
         # 6) next window
         t0_us = t1_us

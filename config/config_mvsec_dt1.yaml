@@ -57,7 +57,7 @@ LK:
 
 
 REJECTION_FILTER:
-  magnitudeThresholdPixel: 20
+  magnitudeThresholdPixel: 10
   boundThreshold: 1.50          #threshold for rejecting the vectors magnitude. it must be > 1.0
 
 #ADAPTIVE SLICING : 
@@ -73,5 +73,5 @@ adaptiveSlicing:
   OFPixelSetpoint: 5  #
 
 #visualize image
-visualizeImage: true
+visualizeImage: false
 delayVisualize: 0

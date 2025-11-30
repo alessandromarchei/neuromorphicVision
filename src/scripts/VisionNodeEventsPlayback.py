@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 # ============================================================
 
 # iterator + util già esistenti (tuoi)
-from testing.utils.load_utils_mvsec import mvsec_evs_iterator, read_rmap, mvsec_evs_iterator_adaptive
+from testing.utils.load_utils_mvsec import mvsec_evs_iterator, read_rmap, mvsec_evs_iterator_adaptive, VALID_FRAME_RANGES
 from testing.utils.event_utils import to_event_frame
 from testing.utils.viz_utils import visualize_image, visualize_gt_flow, visualize_filtered_flow
 from testing.utils.loss import compute_AEE
@@ -260,6 +260,7 @@ class VisionNodeEventsPlayback:
         # Stack everything in a dict to generalize
         logs = {
             "AEE": self.eval_AEE,
+            "REE": self.eval_REE,
             "OUT": self.eval_outliers,
             "DT": self.eval_dt_ms,
             "DTGT": self.eval_dtgt_ms,
@@ -283,6 +284,7 @@ class VisionNodeEventsPlayback:
 
         # Assign back
         self.eval_AEE = logs_np["AEE"].tolist()
+        self.eval_REE = logs_np["REE"].tolist()
         self.eval_outliers = logs_np["OUT"].tolist()
         self.eval_dt_ms = logs_np["DT"].tolist()
         self.eval_dtgt_ms = logs_np["DTGT"].tolist()
@@ -399,7 +401,8 @@ class VisionNodeEventsPlayback:
             flow_map,
             ts_gt,
             dt_gt_ms,
-            flow_id) in iterator:
+            flow_id,
+            in_valid_range) in iterator:
 
             self.deltaTms = dt_ms
             self.current_gt_flow = flow_map
@@ -410,10 +413,12 @@ class VisionNodeEventsPlayback:
             # Process frame (LK + FAST)
             self._processEventFrame(event_frame, t_us)
 
-            # update PID based on filtered flow
-            new_dt, updated = self.adaptiveSlicer.update(self.filteredFlowVectors)
-            if updated:
-                print(f"[Adaptive PID] dt_ms updated → {new_dt:.2f}")
+            # update PID based on filtered flow, 
+            if in_valid_range:
+                # print(f"[Adaptive PID] inside valid frame range")
+                new_dt, updated = self.adaptiveSlicer.update(self.filteredFlowVectors)
+                if updated:
+                    print(f"[Adaptive PID] dt_\ms updated → {new_dt:.2f}")
 
             self.frameID += 1
 

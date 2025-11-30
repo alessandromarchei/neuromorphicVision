@@ -1,12 +1,12 @@
 #MVSEC CONFIG FILE
 EVENTS:
   # scene : /home/alessandro/datasets/mvsec/outdoor_day1/
-  scene: "/home/alessandro/datasets/mvsec/indoor_flying/indoor_flying4_data/"
+  scene: "/home/alessandro/datasets/mvsec/indoor_flying/indoor_flying1_data/"
   side: "left"   #left 
   H: 260
   W: 346
   rectify: false
-  use_valid_frame_range: true 
+  use_valid_frame_range: false 
 
 
 
@@ -68,9 +68,9 @@ adaptiveSlicing:
   D: 0.000
   maxTimingWindow: 50  #ms : min FPS = 20
   minTimingWindow: 10   #ms : max FPS = 100
-  adaptiveTimingWindowStep: 1   #ms
+  adaptiveTimingWindowStep: 1 
   thresholdPIDEvents: 2
-  OFPixelSetpoint: 3  #
+  OFPixelSetpoint: 3 
 
 #visualize image
 visualizeImage: false
