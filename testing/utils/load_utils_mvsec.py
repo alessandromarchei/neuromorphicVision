@@ -66,6 +66,7 @@ VALID_FRAME_RANGES = {
     "indoor_flying1": (200, 2130),  #TODO: change after the debugging adaptive slicing
     "indoor_flying2": (250, 2560),
     "indoor_flying3": (200, 2850),
+    "indoor_flying4": (150, 580),
     "outdoor_day1":   (0, 11750)
 }
 
@@ -613,7 +614,7 @@ def mvsec_evs_iterator_adaptive(
         t0_us = int(valid_start_ts)
         t_end_us = int(valid_end_ts)
 
-        
+
     while t0_us < t_end_us:
 
         # 1) get dt from adaptive controller

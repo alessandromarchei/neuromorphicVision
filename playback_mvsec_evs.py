@@ -77,20 +77,34 @@ if __name__ == "__main__":
 
         frames = np.arange(len(node.eval_AEE))
 
-        plt.figure(figsize=(13, 6))
+        plt.figure(figsize=(13, 10))
+
+        # --- Subplot 1: AEE and Outlier Rate ---
+        plt.subplot(2, 1, 1)
         plt.plot(frames, node.eval_AEE, label="AEE", linewidth=2)
         plt.plot(frames, np.array(node.eval_outliers) * 100.0,
-                 label="Outliers (%)", linewidth=2)
-        plt.xlabel("Frame")
+                label="Outliers (%)", linewidth=2)
         plt.ylabel("Value")
         plt.title(f"AEE and Outlier Rate Over Time – {args.run}")
         plt.legend()
         plt.grid(True)
 
-        plot_path = os.path.join(run_dir, "plot_aee.png")
+        # --- Subplot 2: REE ---
+        plt.subplot(2, 1, 2)
+        plt.plot(frames, node.eval_REE, label="REE", color="tab:green", linewidth=2)
+        plt.xlabel("Frame")
+        plt.ylabel("Relative Error")
+        plt.title("Relative Endpoint Error (REE)")
+        plt.legend()
+        plt.grid(True)
+
+        plt.tight_layout()
+        plot_path = os.path.join(run_dir, "AEE_REE.png")
         plt.savefig(plot_path)
         plt.close()
-        dual_print(f"Saved plot to: {plot_path}")
+        dual_print(f"Saved subplot figure to: {plot_path}")
+
+
 
         # ========= CSV =========
         import csv
@@ -101,6 +115,7 @@ if __name__ == "__main__":
                 "frame_id",
                 "timestamp_us",
                 "AEE",
+                "REE",
                 "outlier_percentage",
                 "dt_ms",
                 "dt_gt_ms",
@@ -111,11 +126,16 @@ if __name__ == "__main__":
                     node.eval_frameID[i],
                     node.eval_timestamp[i],
                     node.eval_AEE[i],
+                    node.eval_REE[i],
                     node.eval_outliers[i],
                     node.eval_dt_ms[i],
                     node.eval_dtgt_ms[i],
                     node.eval_Npoints[i],
                 ])
         dual_print(f"Saved CSV to: {csv_path}")
+
+        #plot now the of flow magnitude
+        node.plot_of_magnitudes(filename=os.path.join(run_dir, "of_magnitudes.png"))
+
         
         log_file.close()

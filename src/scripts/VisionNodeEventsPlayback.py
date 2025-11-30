@@ -75,13 +75,17 @@ class VisionNodeEventsPlayback:
         self.filteredFlowVectors = []
 
         # ---- Evaluation logs ----
-        self.eval_AEE = []
+        self.eval_AEE = []      #average endpoint error
+        self.eval_REE = []      #relative endpoint error
         self.eval_outliers = []
         self.eval_dt_ms = []
         self.eval_dtgt_ms = []
         self.eval_Npoints = []
         self.eval_frameID = []
         self.eval_timestamp = []
+
+        #list of dict containing OF magnitudes per frame and number of filtered points
+        self.of_magnitudes = []
 
 
         self.ofTime = 0.0
@@ -222,6 +226,7 @@ class VisionNodeEventsPlayback:
             return
 
         AEE = np.array(self.eval_AEE)
+        REE = np.array(self.eval_REE)
         OUT = np.array(self.eval_outliers)
         DT  = np.array(self.eval_dt_ms)
         DTGT = np.array(self.eval_dtgt_ms)
@@ -234,6 +239,8 @@ class VisionNodeEventsPlayback:
         print("--------------------------------------------")
         print(f"Mean AEE             : {AEE.mean():.4f}")
         print(f"Median AEE           : {np.median(AEE):.4f}")
+        print(f"Mean REE             : {REE.mean():.4f}")
+        print(f"Median REE           : {np.median(REE):.4f}")
         print(f"Min AEE              : {AEE.min():.4f}")
         print(f"Max AEE              : {AEE.max():.4f}")
         print("--------------------------------------------")
@@ -341,6 +348,7 @@ class VisionNodeEventsPlayback:
         else:
             raise ValueError(f"Unknown slicing type: {self.slicing_type}")
 
+        # self.plot_of_magnitudes()
 
     # --------------------------------------------------------
     # RUN: fixed slicing con mvsec_evs_iterator
@@ -453,6 +461,8 @@ class VisionNodeEventsPlayback:
 
         self.prevFrame = self.currFrame.copy()
 
+        self.saveOFMagnitudes()
+
     # --------------------------------------------------------
     # FAST corner detection (copiato dal tuo applyCornerDetection)
     # --------------------------------------------------------
@@ -551,7 +561,7 @@ class VisionNodeEventsPlayback:
         # #apply AEE evaluation
         if self.deltaTms is not None and self.dt_gt_flow_ms is not None:
 
-            AEE, outlier_percentage, N_points = compute_AEE(
+            AEE, outlier_percentage, N_points, REE = compute_AEE(
                 estimated_flow=self.flow_prediction_map,
                 gt_flow=self.current_gt_flow,
                 dt_input_ms=self.deltaTms,
@@ -560,6 +570,7 @@ class VisionNodeEventsPlayback:
 
             # ----- LOGGING -----
             self.eval_AEE.append(AEE)
+            self.eval_REE.append(REE)
             self.eval_outliers.append(outlier_percentage)
             self.eval_dt_ms.append(self.deltaTms)
             self.eval_dtgt_ms.append(self.dt_gt_flow_ms)
@@ -571,6 +582,68 @@ class VisionNodeEventsPlayback:
             #print every 100 frames
             if self.frameID % 100 == 0:
                 print(f"[EVAL] Frame {self.frameID:05d} | "
-                    f"AEE={AEE:.3f}, Outliers={outlier_percentage*100.0:.2f}%, "
+                    f"AEE={AEE:.3f}, REE={REE:.3f}, Outliers={outlier_percentage*100.0:.2f}%, "
                     f"dt={self.deltaTms:.2f} ms, gt_dt={self.dt_gt_flow_ms:.2f} ms, "
                     f"N={N_points}, GT FLOW ID={self.current_flow_gt_id}")
+    
+
+    def saveOFMagnitudes(self):
+        magnitudes = []
+        for vector in self.filteredFlowVectors:
+            mag = math.sqrt(vector.deltaX ** 2 + vector.deltaY ** 2)
+            magnitudes.append(mag)
+
+        if len(magnitudes) > 0:
+            avg_magnitude = sum(magnitudes) / len(magnitudes)
+        else:
+            avg_magnitude = 0.0
+
+        self.of_magnitudes.append({
+            "magnitude": avg_magnitude,
+            "N_vectors": len(self.filteredFlowVectors),
+            "dt_ms": self.deltaTms
+        })
+
+
+    def plot_of_magnitudes(self, filename):
+        magnitudes = [entry["magnitude"] for entry in self.of_magnitudes]
+        N_vectors = [entry["N_vectors"] for entry in self.of_magnitudes]
+        dt_ms = [entry["dt_ms"] for entry in self.of_magnitudes]
+        
+
+        # Create figure with 3 rows, custom height ratios
+        fig = plt.figure(figsize=(14, 8))
+        gs = fig.add_gridspec(3, 1, height_ratios=[3, 3, 1])  # last row smaller
+
+        # --- Row 1: Magnitudes ---
+        ax1 = fig.add_subplot(gs[0, 0])
+        ax1.plot(magnitudes, label='Optical Flow Magnitude (pixels/frame)')
+        ax1.set_xlabel('Frame Index')
+        ax1.set_ylabel('Magnitude (pixels/frame)')
+        ax1.set_title('Optical Flow Magnitude over Time')
+        ax1.legend()
+        ax1.grid()
+
+        # --- Row 2: dt_ms ---
+        ax2 = fig.add_subplot(gs[1, 0])
+        ax2.plot(dt_ms, label='Delta Time (ms)', color='green')
+        ax2.set_xlabel('Frame Index')
+        ax2.set_ylabel('Δt (ms)')
+        ax2.set_title('Adaptive Slicing Δt (ms)')
+        ax2.legend()
+        ax2.grid()
+
+        # --- Row 3: Number of vectors (smaller height) ---
+        ax3 = fig.add_subplot(gs[2, 0])
+        ax3.plot(N_vectors, label='Number of Filtered Vectors', color='orange')
+        ax3.set_xlabel('Frame Index')
+        ax3.set_ylabel('N vectors')
+        ax3.set_title('Filtered OF Vectors Count')
+        ax3.legend()
+        ax3.grid()
+
+        plt.tight_layout()
+        plt.savefig(f"{filename}.png", dpi=250)
+        plt.close()
+
+        print(f"[VisionNodeEventsPlayback] Saved OF magnitude plot to {filename}.png")

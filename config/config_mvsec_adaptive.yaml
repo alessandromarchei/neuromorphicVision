@@ -1,7 +1,7 @@
 #MVSEC CONFIG FILE
 EVENTS:
   # scene : /home/alessandro/datasets/mvsec/outdoor_day1/
-  scene: "/home/alessandro/datasets/mvsec/indoor_flying/indoor_flying1_data/"
+  scene: "/home/alessandro/datasets/mvsec/indoor_flying/indoor_flying4_data/"
   side: "left"   #left 
   H: 260
   W: 346
@@ -57,7 +57,7 @@ LK:
 
 
 REJECTION_FILTER:
-  magnitudeThresholdPixel: 20
+  magnitudeThresholdPixel: 10
   boundThreshold: 1.50          #threshold for rejecting the vectors magnitude. it must be > 1.0
 
 #ADAPTIVE SLICING : 
@@ -69,9 +69,9 @@ adaptiveSlicing:
   maxTimingWindow: 50  #ms : min FPS = 20
   minTimingWindow: 10   #ms : max FPS = 100
   adaptiveTimingWindowStep: 1   #ms
-  thresholdPIDEvents: 10
-  OFPixelSetpoint: 1  #
+  thresholdPIDEvents: 2
+  OFPixelSetpoint: 3  #
 
 #visualize image
-visualizeImage: true
+visualizeImage: false
 delayVisualize: 0
