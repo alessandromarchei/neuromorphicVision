@@ -6,7 +6,7 @@ EVENTS:
   H: 260
   W: 346
   rectify: false
-  use_valid_frame_range: false 
+  use_valid_frame_range: true 
 
 
 
@@ -25,7 +25,7 @@ ACCUMULATOR:
   ignorePolarity: false
 
 SLICING:
-  type: "mvsec"    # "mvsec" | "fixed" | "adaptive"
+  type: "adaptive"    # "mvsec" | "fixed" | "adaptive"
   dt_ms: 10        # used only if type == "fixed"
   gt_mode : "dt1" #use "20hz", "dt1" or "dt4"
 
@@ -63,14 +63,14 @@ REJECTION_FILTER:
 #ADAPTIVE SLICING : 
 adaptiveSlicing:
   enable: true
-  P: 0.3
+  P: 0.5
   I: 0.05
   D: 0.000
   maxTimingWindow: 50  #ms : min FPS = 20
   minTimingWindow: 10   #ms : max FPS = 100
   adaptiveTimingWindowStep: 1   #ms
   thresholdPIDEvents: 10
-  OFPixelSetpoint: 5  #
+  OFPixelSetpoint: 1  #
 
 #visualize image
 visualizeImage: true

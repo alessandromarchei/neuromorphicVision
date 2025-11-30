@@ -63,7 +63,7 @@ DEFAULT_BATCH_EVENTS = 200_000
 #valid ranges for each MVSEC scene, skipping frames where the drone is not moving (before landing and takeoff)
 
 VALID_FRAME_RANGES = {
-    "indoor_flying1": (130, 2130),
+    "indoor_flying1": (200, 2130),  #TODO: change after the debugging adaptive slicing
     "indoor_flying2": (250, 2560),
     "indoor_flying3": (200, 2850),
     "outdoor_day1":   (0, 11750)
@@ -433,14 +433,15 @@ def mvsec_evs_iterator_adaptive(
     H=260,
     W=346,
     rectify=True,
-    gt_mode="20hz",           # NEW: "20hz", "dt1", "dt4"
+    gt_mode="dt1",           # NEW: "20hz", "dt1", "dt4"
     max_events_loaded=DEFAULT_MAX_EVENTS_LOADED,
     batch_events=DEFAULT_BATCH_EVENTS,
+    use_valid_frame_range=False,
 ):
+    print(f"[MVSEC-ADAPTIVE] Starting iterator...")
     """
     Adaptive slicing MVSEC iterator.
     Supports GT at:
-        - 20Hz  (original MVSEC flow_dist)
         - dt=1  (upsampled flow)
         - dt=4  (downsampled flow)
     
@@ -452,7 +453,6 @@ def mvsec_evs_iterator_adaptive(
         ts_gt_us,
         dt_gt_ms
     """
-
     print(f"[MVSEC-ADAPTIVE] Streaming from {scenedir}, GT={gt_mode}")
 
     # ---------------------------------------------------------
@@ -474,23 +474,14 @@ def mvsec_evs_iterator_adaptive(
     flow_ts_us = None
     dt_mode = None
 
-    if gt_mode == "20hz":
-        print("[GT] Using *_gt.hdf5 (20Hz)")
-        h5_gt = glob.glob(os.path.join(scenedir, "*_gt.hdf5"))
-        assert len(h5_gt) == 1
-        f_gt = h5py.File(h5_gt[0], "r")
 
-        flow_dset = f_gt[f"davis/{side}/flow_dist"]  # shape (Ngt, 2, H, W)
-        ts_sec = f_gt[f"davis/{side}/flow_dist_ts"][:]
-        flow_ts_us = (ts_sec * 1e6).astype(np.int64)
-        dt_mode = "20hz"
-
-    elif gt_mode in ("dt1", "dt4"):
+    #only the dt=1 and dt=4 modes are used
+    if gt_mode in ("dt1", "dt4"):
         dt = 1 if gt_mode == "dt1" else 4
         dt_mode = f"dt={dt}"
         print(f"[GT] Using scene.h5 → flow/{dt_mode}")
 
-        h5_dt = glob.glob(os.path.join(scenedir, "*.h5"))
+        h5_dt = glob.glob(os.path.join(scenedir, "*dt.h5"))
         assert len(h5_dt) == 1
         f_gt = h5py.File(h5_dt[0], "r")
 
@@ -503,12 +494,26 @@ def mvsec_evs_iterator_adaptive(
         # timestamps: (N,2) → prev_t, cur_t
         ts_pairs = group["timestamps"][:]
         flow_ts_us = (ts_pairs[:, 1] * 1e6).astype(np.int64)  # use end timestamp as ground-truth time
-
-    else:
-        raise ValueError("gt_mode must be '20hz', 'dt1', or 'dt4'")
+    else :
+        raise ValueError("gt_mode must be: 'dt1' or 'dt4'")
 
     print(f"[GT] Loaded {len(flow_ts_us)} flow timestamps.")
 
+
+    #apply skipping to valid frames if specified
+    if use_valid_frame_range is True:
+        valid_frame_range = get_valid_range_from_scene(scenedir)
+
+        #get the frame indices of the fisrt and last valid frames
+        print(f"[MVSEC-ADAPTIVE] Using valid frame range: {valid_frame_range}")
+        valid_start_idx = valid_frame_range[0]
+        valid_end_idx = valid_frame_range[1]
+        #retrieve the timestamp of the first valid frame
+        valid_start_ts = f_ev[f"davis/{side}/image_raw_ts"][valid_start_idx] * 1e6  # in us
+        valid_end_ts = f_ev[f"davis/{side}/image_raw_ts"][valid_end_idx] * 1e6  # in us
+        
+    else:
+        valid_frame_range = None
 
     # ---------------------------------------------------------
     # Function to load GT lazily (without RAM explosion)
@@ -602,6 +607,13 @@ def mvsec_evs_iterator_adaptive(
     # ================================================================
     print("[MVSEC-ADAPTIVE] Starting adaptive loop...")
 
+
+    #skip directly to valid frist frame timestamp and set t_end_us accordingly
+    if valid_frame_range is not None:
+        t0_us = int(valid_start_ts)
+        t_end_us = int(valid_end_ts)
+
+        
     while t0_us < t_end_us:
 
         # 1) get dt from adaptive controller

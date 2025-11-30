@@ -158,7 +158,23 @@ class AdaptiveSlicerPID:
         self.enabled = enabled                     # <--- DIPENDE DA SLICING.type!
 
         slicer_cfg = cfg["SLICING"]
-        self.initial_dt_ms = 1000.0 / slicer_cfg.get("fps", 50)   # dt iniziale
+
+        self.initial_dt = slicer_cfg.get("gt_mode", "dt1")   # dt iniziale
+
+        if self.initial_dt == "dt1" :
+            if "outdoor" in cfg["EVENTS"]["scene"]:
+                # outdoor: 21.941 ms → 45 hz
+                # indoor: 31.859 ms → ~31 hz     
+                self.initial_dt_ms = 22.0
+            else:
+                self.initial_dt_ms = 32.0
+        elif self.initial_dt == "dt4":
+            if "outdoor" in cfg["EVENTS"]["scene"]:
+                # outdoor: 87.764 ms → ~11.4 hz
+                # indoor: 127.436 ms → ~7.85 hz
+                self.initial_dt_ms = 88.0
+            else:
+                self.initial_dt_ms = 127.0
 
         ad = cfg["adaptiveSlicing"]
 
@@ -220,5 +236,9 @@ class AdaptiveSlicerPID:
             self.PIDoutput = 0.0
 
         self.previousError = error
+
+        if updateTimingWindow:
+            print(f"[AdaptiveSlicerPID] Updated timing window to {self.adaptiveTimeWindow} ms")
+
         return self.adaptiveTimeWindow, updateTimingWindow
 

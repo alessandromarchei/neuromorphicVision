@@ -381,7 +381,8 @@ class VisionNodeEventsPlayback:
             adaptive_slicer=self.adaptiveSlicer,
             H=self.H,
             W=self.W,
-            rectify=self.rectify
+            rectify=self.rectify,
+            use_valid_frame_range=self.use_valid_frame_range
         )
 
         for (event_frame,
@@ -436,9 +437,9 @@ class VisionNodeEventsPlayback:
 
         #apply visualization eventually
         if self.visualizeImage:
-            visualize_gt_flow(self.current_gt_flow, self.currFrame, win_name="GT Flow", apply_mask=False)
-            visualize_gt_flow(self.flow_prediction_map, self.currFrame, win_name="GT Flow Prediction", apply_mask=False)
-            visualize_image(self.currFrame,self.currPoints,self.prevPoints,self.status)
+            # visualize_gt_flow(self.current_gt_flow, self.currFrame, win_name="GT Flow", apply_mask=False)
+            # visualize_gt_flow(self.flow_prediction_map, self.currFrame, win_name="GT Flow Prediction", apply_mask=False)
+            # visualize_image(self.currFrame,self.currPoints,self.prevPoints,self.status)
             visualize_filtered_flow(self.currFrame, self.filteredFlowVectors, win_name="OF_filtered")
             cv2.waitKey(self.delayVisualize)
 
