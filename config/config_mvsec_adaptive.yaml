@@ -68,7 +68,7 @@ adaptiveSlicing:
   D: 0.000
   maxTimingWindow: 50  #ms : min FPS = 20
   minTimingWindow: 10   #ms : max FPS = 100
-  adaptiveTimingWindowStep: 1 
+  adaptiveTimingWindowStep: 1
   thresholdPIDEvents: 2
   OFPixelSetpoint: 3 
 
