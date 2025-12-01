@@ -1,8 +1,6 @@
-#MVSEC CONFIG FILE
 EVENTS:
-  # scene : /home/alessandro/datasets/mvsec/outdoor_day1/
-  #scene: "/home/alessandro/datasets/dvxplorer/day1_events/"
-  scene: "/home/alessandro/datasets/dvxplorer/night1_events/"
+  scene: "/home/alessandro/datasets/dvxplorer/day1_events/"
+  # scene: "/home/alessandro/datasets/dvxplorer/night1_events/"
   side: "left"   #left 
   H: 480
   W: 640
@@ -26,8 +24,8 @@ ACCUMULATOR:
   ignorePolarity: false
 
 SLICING:
-  type: "fixed"    # "mvsec" | "fixed" | "adaptive"
-  dt_ms: 200        # used only if type == "fixed"
+  type: "fixed"    # "fixed" | "adaptive"
+  dt_ms: 33        # used only if type == "fixed"
 
 
 CAMERA:

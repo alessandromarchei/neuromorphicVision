@@ -356,11 +356,20 @@ class VisionNodeDVXEventsPlayback:
             dT_ms=self.fixed_dt_ms,
             H=self.H,
             W=self.W,
+            slicing_type=self.slicing_type,
             use_valid_frame_range=self.use_valid_frame_range
         )
 
-        for i, (event_frame, t_us, dt_ms) in enumerate(iterator):
-            self.deltaTms = dt_ms
+        for slice_data in iterator:
+            #retrieve data from the returned dict
+            event_frame = slice_data["event_frame"]
+            t_us = slice_data["t1_us"]
+            dt_ms = slice_data["dt_ms"]
+
+            dv_imu = slice_data["dv_imu"]
+            px4_imu = slice_data["px4_imu"]
+            px4_state = slice_data["px4_state"]
+
 
             print(f"Current event frame timestamp : {t_us} us, dt_ms={dt_ms:.2f}")
 
