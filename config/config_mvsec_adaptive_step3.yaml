@@ -1,11 +1,10 @@
 #MVSEC CONFIG FILE
 EVENTS:
   # scene : /home/alessandro/datasets/mvsec/outdoor_day1/
-  #scene: "/home/alessandro/datasets/dvxplorer/day1_events/"
-  scene: "/home/alessandro/datasets/dvxplorer/night1_events/"
+  scene: "/home/alessandro/datasets/mvsec/indoor_flying/indoor_flying1_data/"
   side: "left"   #left 
-  H: 480
-  W: 640
+  H: 260
+  W: 346
   rectify: false
   use_valid_frame_range: false 
 
@@ -26,20 +25,21 @@ ACCUMULATOR:
   ignorePolarity: false
 
 SLICING:
-  type: "fixed"    # "mvsec" | "fixed" | "adaptive"
-  dt_ms: 200        # used only if type == "fixed"
+  type: "adaptive"    # "mvsec" | "fixed" | "adaptive"
+  dt_ms: 10        # used only if type == "fixed"
+  gt_mode : "dt1" #use "20hz", "dt1" or "dt4"
 
 
 CAMERA:
   #camera intrinsic parameters
-  fx : 676.33153642211096
-  fy : 677.78307833910333
-  cx : 302.40954664576429
-  cy : 250.16845570548003
-  pixelSize: 0.000009 #9 uMeters
-  gyroFreq: 800.0   #in Hz
+  fx : 196.73614846589038 
+  fy : 196.5361311749205
+  cx : 173.9835140415677
+  cy : 134.63020721240977
+  pixelSize: 0.0000185 #18.5 μm from specifications (DAVIS346)
 
   
+
 
 LK:
   winSize:
@@ -63,15 +63,15 @@ REJECTION_FILTER:
 #ADAPTIVE SLICING : 
 adaptiveSlicing:
   enable: true
-  P: 0.3
+  P: 0.5
   I: 0.05
   D: 0.000
   maxTimingWindow: 50  #ms : min FPS = 20
   minTimingWindow: 10   #ms : max FPS = 100
-  adaptiveTimingWindowStep: 1   #ms
-  thresholdPIDEvents: 10
-  OFPixelSetpoint: 5  #
+  adaptiveTimingWindowStep: 3
+  thresholdPIDEvents: 2
+  OFPixelSetpoint: 3 
 
 #visualize image
-visualizeImage: true
+visualizeImage: false
 delayVisualize: 0

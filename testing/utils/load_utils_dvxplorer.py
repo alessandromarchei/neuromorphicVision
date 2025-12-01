@@ -16,17 +16,17 @@ from testing.utils.event_utils import to_event_frame
 
 # Default limits (can be overridden in function params)
 DEFAULT_MAX_EVENTS_LOADED = 1_000_000
-DEFAULT_BATCH_EVENTS = 200_000
+DEFAULT_BATCH_EVENTS = 2_000_000
 
 
 #valid ranges for each MVSEC scene, skipping frames where the drone is not moving (before landing and takeoff)
 
 VALID_FRAME_RANGES = {
-    "indoor_flying1": (180, 2130),  #TODO: change after the debugging adaptive slicing
-    "indoor_flying2": (250, 2560),
-    "indoor_flying3": (200, 2850),
-    "indoor_flying4": (150, 580),
-    "outdoor_day1":   (0, 11750)
+    "day1_events": (1724173779479876, 1724173860879876),
+    "day2_events": (1724175809154063, 1724175902754063),
+    "day3_events": (1724314265805073, 1724314359805073),
+    "day4_events": (150, 580),
+    "night1_events":   (0, 11750)
 }
 
 

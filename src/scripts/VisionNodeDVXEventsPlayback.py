@@ -362,6 +362,8 @@ class VisionNodeDVXEventsPlayback:
         for i, (event_frame, t_us, dt_ms) in enumerate(iterator):
             self.deltaTms = dt_ms
 
+            print(f"Current event frame timestamp : {t_us} us, dt_ms={dt_ms:.2f}")
+
             self._processEventFrame(event_frame, t_us)
             self.frameID += 1
 
