@@ -1,11 +1,11 @@
 EVENTS:
-  scene: "/home/alessandro/datasets/dvxplorer/day1_events/"
+  scene: "/home/alessandro/datasets/dvxplorer/day2_events/"
   # scene: "/home/alessandro/datasets/dvxplorer/night1_events/"
   side: "left"   #left 
   H: 480
   W: 640
   rectify: false
-  use_valid_frame_range: false 
+  use_valid_frame_range: true 
 
 
 
