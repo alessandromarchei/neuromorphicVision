@@ -54,6 +54,29 @@ LK:
   minEigThreshold: 0.001  # Threshold for minimum eigenvalue of Lucas-Kanade optical flow 
 
 
+#LOW PASS FILTER
+SMOOTHINGFILTER:
+  enable: true
+  type: 0   # 0 : COMPLEMENTARY FILTER, 1 : LOW PASS FILTER
+  lpfK: 0.7  #coefficient for the low pass filter. 0.5 is the default value
+  complementaryK: 2.3 #coefficient for the complementary filter.
+
+#altitude parameters
+ALTITUDE:
+  type: 0   # 0:average, 1:median
+  saturationValue: 45   #in meters, if values over this are computed, than saturate to this
+
+#safety parameters
+lidarMax : 0.0    #in meters. if lidar the lidar detects less than this, publish this value rather than the vision based altitude
+
+publishAltitudeFrequency: 50  #in Hz. IT MUST BE BETWEEN 30 and 50 Hz
+
+velocitySource : 0 # 0: airspped, 1: groundspeed
+
+FASTLKParallel : true
+
+
+
 REJECTION_FILTER:
   magnitudeThresholdPixel: 10
   boundThreshold: 1.50          #threshold for rejecting the vectors magnitude. it must be > 1.0

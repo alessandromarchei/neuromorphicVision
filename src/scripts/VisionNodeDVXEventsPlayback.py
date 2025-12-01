@@ -16,10 +16,8 @@ import matplotlib.pyplot as plt
 # ============================================================
 
 # iterator + util già esistenti (tuoi)
-from testing.utils.load_utils_dvxplorer import dvxplorer_evs_iterator, VALID_FRAME_RANGES
-from testing.utils.event_utils import to_event_frame
-from testing.utils.viz_utils import visualize_image, visualize_gt_flow, visualize_filtered_flow
-from testing.utils.loss import compute_AEE
+from testing.utils.load_utils_dvxplorer import dvxplorer_evs_iterator
+from testing.utils.viz_utils import visualize_image, visualize_filtered_flow
 
 
 # strutture dati e parametri (come nel tuo script a frame)
@@ -31,14 +29,20 @@ from src.scripts.defs import (
     OFVectorFrame
 )
 
-# funzioni di utilità per l'OF (uguali al tuo script a frame)
 from src.scripts.functions import (
     randomlySampleKeypoints,
     scoreAndRankKeypointsUsingGradient,
     rejectOutliersFrame,
+    bodyToCam,
+    camToBody,
+    bodyToInertial,
+    LPFilter,
+    complementaryFilter,
     drawTextWithBackground,
+    compute_a_vector_pixel,
+    pixel_to_angle,
     compute_a_vector_meter,
-    compute_direction_vector,
+    compute_direction_vector
 )
 
 # ============================================================
@@ -48,11 +52,10 @@ from src.scripts.functions import (
 class VisionNodeDVXEventsPlayback:
     """
     Variante event-based:
-    - usa eventi MVSEC
+    - usa eventi dvxplorer camera dataset
     - genera event frames
     - calcola FAST + LK + filtri
     - opzionalmente usa adaptive slicing PID sui dt_ms
-    - carica GT optical flow maps se presente *_gt.hdf5
     """
 
     def __init__(self, yaml_path: str):
@@ -74,33 +77,27 @@ class VisionNodeDVXEventsPlayback:
         self.flowVectors = []
         self.filteredFlowVectors = []
 
-        # ---- Evaluation logs ----
-        self.eval_AEE = []      #average endpoint error
-        self.eval_REE = []      #relative endpoint error
-        self.eval_outliers = []
-        self.eval_dt_ms = []
-        self.eval_dtgt_ms = []
-        self.eval_Npoints = []
-        self.eval_frameID = []
-        self.eval_timestamp = []
-
         #list of dict containing OF magnitudes per frame and number of filtered points
         self.of_magnitudes = []
 
+        self.curr_gyro_cam = np.array([0.0,0.0,0.0], dtype=np.float32)          #gyroscope, camera frame : gx, gy, gz
+        self.curr_velocity_cam = np.array([0.0,0.0,0.0], dtype=np.float32)      #forward velocity
 
-        self.ofTime = 0.0
-        self.featureDetectionTime = 0.0
+        self.prevFilteredAltitude = 0.0
+        self.filteredAltitude = 0.0
+        self.avgAltitude = 0.0
+        self.unfilteredAltitude = 0.0
+
+        self.smoothingFilterType = 0
+        self.complementaryK = 0.9
+        self.lpfK = 0.1
+        self.altitudeType = 0
+        self.saturationValue = 50.0
 
         self.magnitudeThresholdPixel = 10.0
         self.boundThreshold = 1.5
 
         self.frameID = 0
-
-        # GT flow corrente (se disponibile)
-        self.current_gt_flow = None
-        self.current_gt_ts_us = None
-        self.dt_gt_flow_ms = None
-        self.current_flow_gt_id = 0
 
         # load config
         self._loadParametersFromYAML(yaml_path)
@@ -217,81 +214,6 @@ class VisionNodeDVXEventsPlayback:
         if "delayVisualize" in self.config:
             self.delayVisualize = int(self.config["delayVisualize"])
 
-    def printFinalReport(self):
-        if len(self.eval_AEE) == 0:
-            print("\n[FINAL REPORT] No valid flow comparisons found.\n")
-            return
-
-        AEE = np.array(self.eval_AEE)
-        REE = np.array(self.eval_REE)
-        OUT = np.array(self.eval_outliers)
-        DT  = np.array(self.eval_dt_ms)
-        DTGT = np.array(self.eval_dtgt_ms)
-        NPTS = np.array(self.eval_Npoints)
-
-        print("\n============================================")
-        print("              FINAL EVALUATION REPORT       ")
-        print("============================================")
-        print(f"Total valid frames: {len(AEE)}")
-        print("--------------------------------------------")
-        print(f"Mean AEE             : {AEE.mean():.4f}")
-        print(f"Median AEE           : {np.median(AEE):.4f}")
-        print(f"Mean REE             : {REE.mean():.4f}")
-        print(f"Median REE           : {np.median(REE):.4f}")
-        print(f"Min AEE              : {AEE.min():.4f}")
-        print(f"Max AEE              : {AEE.max():.4f}")
-        print("--------------------------------------------")
-        print(f"Mean Outliers (%)    : {(OUT.mean()*100):.2f}")
-        print(f"Median Outliers (%)  : {(np.median(OUT)*100):.2f}")
-        print("--------------------------------------------")
-        print(f"Mean Event dt (ms)   : {DT.mean():.3f}")
-        print(f"Mean GT dt (ms)      : {DTGT.mean():.3f}")
-        print("--------------------------------------------")
-        print(f"Mean #points/frame   : {NPTS.mean():.2f}")
-        print("============================================\n")
-
-
-    def cleanNaNEntries(self):
-        """Remove all indices where any logged quantity contains NaN."""
-
-        # Stack everything in a dict to generalize
-        logs = {
-            "AEE": self.eval_AEE,
-            "REE": self.eval_REE,
-            "OUT": self.eval_outliers,
-            "DT": self.eval_dt_ms,
-            "DTGT": self.eval_dtgt_ms,
-            "NPTS": self.eval_Npoints,
-            "FRAME": self.eval_frameID,
-            "TS": self.eval_timestamp,
-        }
-
-        # Convert all lists → numpy arrays
-        logs_np = {k: np.array(v) for k, v in logs.items()}
-
-        # Create mask of valid indices (no nan in ANY array)
-        mask = np.ones(len(self.eval_AEE), dtype=bool)
-
-        for k, arr in logs_np.items():
-            mask &= ~np.isnan(arr)
-
-        # Apply mask back to all lists
-        for k, arr in logs_np.items():
-            logs_np[k] = arr[mask]
-
-        # Assign back
-        self.eval_AEE = logs_np["AEE"].tolist()
-        self.eval_REE = logs_np["REE"].tolist()
-        self.eval_outliers = logs_np["OUT"].tolist()
-        self.eval_dt_ms = logs_np["DT"].tolist()
-        self.eval_dtgt_ms = logs_np["DTGT"].tolist()
-        self.eval_Npoints = logs_np["NPTS"].tolist()
-        self.eval_frameID = logs_np["FRAME"].tolist()
-        self.eval_timestamp = logs_np["TS"].tolist()
-
-        # Debug print
-        print(f"[CLEAN] Removed {mask.size - mask.sum()} NaN entries.")
-
     # --------------------------------------------------------
     # Feature detector
     # --------------------------------------------------------
@@ -356,6 +278,7 @@ class VisionNodeDVXEventsPlayback:
             dT_ms=self.fixed_dt_ms,
             H=self.H,
             W=self.W,
+            adaptive_slicer_pid=self.adaptiveSlicer,
             slicing_type=self.slicing_type,
             use_valid_frame_range=self.use_valid_frame_range
         )
@@ -373,60 +296,36 @@ class VisionNodeDVXEventsPlayback:
 
             print(f"Current event frame timestamp : {t_us} us, dt_ms={dt_ms:.2f}")
 
-            self._processEventFrame(event_frame, t_us)
-            self.frameID += 1
-
-    # --------------------------------------------------------
-    # RUN: adaptive slicing con PID
-    # --------------------------------------------------------
-    def _run_adaptive_slicing(self):
-        print("[VisionNode] Running ADAPTIVE slicing with unified iterator")
-
-        iterator = dvxplorer_evs_iterator(
-            self.events_dir,
-            H=self.H,
-            W=self.W,
-            rectify=self.rectify,
-            use_valid_frame_range=self.use_valid_frame_range
-        )
-
-        for (event_frame,
-            t_us,
-            dt_ms,
-            flow_map,
-            ts_gt,
-            dt_gt_ms,
-            flow_id,
-            in_valid_range) in iterator:
-
-            self.deltaTms = dt_ms
-            self.current_gt_flow = flow_map
-            self.current_gt_ts_us = ts_gt
-            self.dt_gt_flow_ms = dt_gt_ms
-            self.current_flow_gt_id = flow_id
-
-            # Process frame (LK + FAST)
-            self._processEventFrame(event_frame, t_us)
-
-            # update PID based on filtered flow, 
-            if in_valid_range:
-                # print(f"[Adaptive PID] inside valid frame range")
-                new_dt, updated = self.adaptiveSlicer.update(self.filteredFlowVectors)
-                if updated:
-                    print(f"[Adaptive PID] dt_\ms updated → {new_dt:.2f}")
-
+            self._processEventFrame(event_frame, t_us, dv_imu, px4_state)
             self.frameID += 1
 
 
     # --------------------------------------------------------
     # Processa UN event frame (come processFrames(), ma senza altitude)
     # --------------------------------------------------------
-    def _processEventFrame(self, event_frame, timestamp_us):
+    def _processEventFrame(self, event_frame, t_us, dv_imu_slice, px4_state_slice):
         """
         Per ora: optical flow + feature detection, esattamente come nel caso frames.
         (La GT è già in self.current_gt_flow se disponibile.)
         """
         self.currFrame = event_frame
+
+        #get current imu data
+        # ============================================================
+        # EXTRACT IMU + PX4 DATA FOR THIS EVENT SLICE
+        # ============================================================
+
+        # 1) Filter IMU → gyro in camera frame
+        self.curr_gyro_cam = self._imu_to_cam(dv_imu_slice)
+
+        # 2) Extract PX4 velocity → transform to camera frame
+        self.curr_velocity_cam = self._px4_velocity_to_cam(px4_state_slice)
+
+        # 3) Needed for altitude orientation
+        self.cosRoll = math.cos(np.mean(px4_state_slice.get("RollAngle", 0.0)))
+        self.sinRoll = math.sin(np.mean(px4_state_slice.get("RollAngle", 0.0)))
+        self.cosPitch = math.cos(np.mean(px4_state_slice.get("PitchAngle", 0.0)))
+        self.sinPitch = math.sin(np.mean(px4_state_slice.get("PitchAngle", 0.0)))
 
         # se è il primissimo frame, inizializza solo i punti
         if self.prevFrame is None:
@@ -435,33 +334,87 @@ class VisionNodeDVXEventsPlayback:
             self._applyCornerDetection(self.currFrame, outputArray='prevPoints')
             return
 
-        startOF = time.perf_counter()
         self._calculateOpticalFlow(self.currFrame)
-        endOF = time.perf_counter()
-        self.ofTime = (endOF - startOF) * 1e6
-
-        #self.evaluateOpticalFlow()
-
 
         #apply visualization eventually
         if self.visualizeImage:
-            # visualize_gt_flow(self.current_gt_flow, self.currFrame, win_name="GT Flow", apply_mask=False)
-            # visualize_gt_flow(self.flow_prediction_map, self.currFrame, win_name="GT Flow Prediction", apply_mask=False)
             # visualize_image(self.currFrame,self.currPoints,self.prevPoints,self.status)
             visualize_filtered_flow(self.currFrame, self.filteredFlowVectors, win_name="OF_filtered")
             cv2.waitKey(self.delayVisualize)
 
 
+
         self.prevPoints.clear()
 
-        startFD = time.perf_counter()
         self._applyCornerDetection(self.currFrame, outputArray='prevPoints')
-        endFD = time.perf_counter()
-        self.featureDetectionTime = (endFD - startFD) * 1e6
 
         self.prevFrame = self.currFrame.copy()
 
-        self.saveOFMagnitudes()
+
+        #estimate altitude
+        T_cam = self.curr_velocity_cam
+
+        altitudes = []
+        for fv in self.filteredFlowVectors:
+            depth = self._estimateDepth(fv, T_cam)
+            alt = self._estimateAltitude(fv, depth)
+            if not math.isnan(alt):
+                altitudes.append(alt)
+
+        if not altitudes:
+            self.avgAltitude = self.prevFilteredAltitude
+        else:
+            if self.altitudeType == 1:
+                altitudes.sort()
+                self.avgAltitude = altitudes[len(altitudes)//2]
+            else:
+                self.avgAltitude = sum(altitudes)/len(altitudes)
+
+        if self.avgAltitude >= self.saturationValue:
+            self.avgAltitude = self.saturationValue
+
+        if math.isnan(self.avgAltitude):
+            self.avgAltitude = self.prevFilteredAltitude
+
+        self.unfilteredAltitude = self.avgAltitude
+
+        # smoothing
+        if self.smoothingFilterType == 0:
+            dt_s = self.deltaTms/1000.0
+            self.filteredAltitude = complementaryFilter(self.avgAltitude,
+                                                        self.prevFilteredAltitude,
+                                                        self.complementaryK,
+                                                        dt_s)
+        else:
+            self.filteredAltitude = LPFilter(self.avgAltitude,
+                                            self.prevFilteredAltitude,
+                                            self.lpfK)
+
+        if not math.isnan(self.filteredAltitude):
+            self.prevFilteredAltitude = self.filteredAltitude
+
+
+        #log telemetry data + estimated altitude
+
+        # 1) timestamp
+        curr_t = t_us
+
+        # 2) estimated altitude
+        est_alt = float(self.filteredAltitude)
+
+        # 3) GT altitude from PX4
+        # px4_state_slice is a dict of arrays → take mean if exists
+        if "DistanceGround" in px4_state_slice:
+            gt_alt = float(np.mean(px4_state_slice["DistanceGround"]))
+        elif "Lidar" in px4_state_slice:
+            gt_alt = float(np.mean(px4_state_slice["Lidar"]))
+        elif "distance_ground" in px4_state_slice:
+            gt_alt = float(np.mean(px4_state_slice["distance_ground"]))
+        else:
+            gt_alt = float("nan")   # no GT available
+
+        print(f"[Altitude] t={curr_t} us | est={est_alt:.3f} m | gt={gt_alt:.3f} m")
+
 
     # --------------------------------------------------------
     # FAST corner detection (copiato dal tuo applyCornerDetection)
@@ -531,119 +484,109 @@ class VisionNodeDVXEventsPlayback:
                 self.magnitudeThresholdPixel,
                 self.boundThreshold
             )
+
+            #apply derotation with the current gyro data
+            for fv in self.filteredFlowVectors:
+                self._applyDerotation3D_events(fv, self.curr_gyro_cam)
+
         else:
             print("FIRST EVENT FRAME, skipping OF...")
 
-    def evaluateOpticalFlow(self):
+    # --------------------------------------------------------
+    # IMU → FRD → CAMERA FRAME MAPPINGS
+    # --------------------------------------------------------
+    def _imu_to_cam(self, dv_imu_slice):
         """
-        1) convert discrete point wise optical flow into 2D optical flow
-        2) apply the AEE metric on the OF map
+        dv_imu_slice has Nx1 arrays: ax,ay,az,gx,gy,gz,temperature...
+        We take the MEAN over the window.
+        Convert FLU → FRD → camera frame (same logic as frames version).
         """
+        if len(dv_imu_slice) == 0:
+            return np.zeros(3, dtype=np.float32)
 
-        #apply a 2D (2,H,W) mask containing the flow per pixel value, in the self.filteredFlowVectors values
-        # flow_prediction = sparseTo2Dflow(self)
-        
-        #create the 2D map with the same shape of flow gt (sparse)
-        self.flow_prediction_map = np.zeros_like(self.current_gt_flow)
+        gx = np.mean(dv_imu_slice.get("gx", 0.0))
+        gy = np.mean(dv_imu_slice.get("gy", 0.0))
+        gz = np.mean(dv_imu_slice.get("gz", 0.0))
 
-        for point in self.filteredFlowVectors:
-            #insert each feature inside the map
-            (x_coord, y_coord) = np.round(point.position).astype(int)
+        # FLU → FRD (gx, -gy, -gz)
+        gyro_frd = np.array([gx, -gy, -gz], dtype=np.float32)
 
-            #check shape
-            if self.flow_prediction_map.ndim == 3 and self.flow_prediction_map.shape[2] == 2:
-                #assuming the shape is (H, W, 2), so reshape to (2, H, W)
-                self.flow_prediction_map = self.flow_prediction_map.transpose(2, 0, 1)
-
-            self.flow_prediction_map[0][y_coord][x_coord] = point.deltaX
-            self.flow_prediction_map[1][y_coord][x_coord] = point.deltaY
-
-        # #apply AEE evaluation
-        if self.deltaTms is not None and self.dt_gt_flow_ms is not None:
-
-            AEE, outlier_percentage, N_points, REE = compute_AEE(
-                estimated_flow=self.flow_prediction_map,
-                gt_flow=self.current_gt_flow,
-                dt_input_ms=self.deltaTms,
-                dt_gt_ms=self.dt_gt_flow_ms
-            )
-
-            # ----- LOGGING -----
-            self.eval_AEE.append(AEE)
-            self.eval_REE.append(REE)
-            self.eval_outliers.append(outlier_percentage)
-            self.eval_dt_ms.append(self.deltaTms)
-            self.eval_dtgt_ms.append(self.dt_gt_flow_ms)
-            self.eval_Npoints.append(N_points)
-            self.eval_frameID.append(self.frameID)
-            self.eval_timestamp.append(self.current_gt_ts_us)
+        # FRD → CAM
+        return bodyToCam(gyro_frd, self.camParams)
 
 
-            #print every 100 frames
-            if self.frameID % 100 == 0:
-                print(f"[EVAL] Frame {self.frameID:05d} | "
-                    f"AEE={AEE:.3f}, REE={REE:.3f}, Outliers={outlier_percentage*100.0:.2f}%, "
-                    f"dt={self.deltaTms:.2f} ms, gt_dt={self.dt_gt_flow_ms:.2f} ms, "
-                    f"N={N_points}, GT FLOW ID={self.current_flow_gt_id}")
-    
+    def _px4_velocity_to_cam(self, px4_state_slice):
+        """
+        px4_state_slice holds velocities in FLU or FRD depending on logs.
+        We take vx, vy, vz and convert them to camera frame.
+        """
+        if len(px4_state_slice) == 0:
+            return np.zeros(3, dtype=np.float32)
 
-    def saveOFMagnitudes(self):
-        magnitudes = []
-        for vector in self.filteredFlowVectors:
-            mag = math.sqrt(vector.deltaX ** 2 + vector.deltaY ** 2)
-            magnitudes.append(mag)
+        vx = np.mean(px4_state_slice.get("Airspeed", 0.0))
+        vy = 0.0
+        vz = 0.0
 
-        if len(magnitudes) > 0:
-            avg_magnitude = sum(magnitudes) / len(magnitudes)
-        else:
-            avg_magnitude = 0.0
+        vel_frd = np.array([vx, vy, vz], dtype=np.float32)
+        return bodyToCam(vel_frd, self.camParams)
 
-        self.of_magnitudes.append({
-            "magnitude": avg_magnitude,
-            "N_vectors": len(self.filteredFlowVectors),
-            "dt_ms": self.deltaTms
-        })
+    def _applyDerotation3D_events(self, ofVector, gyro_cam):
+        """
+        Same as applyDerotation3D from frames version,
+        but using the IMU extracted from events.
+        """
+        norm_a = np.linalg.norm(ofVector.AMeter)
+
+        Pprime_ms = np.array([
+            ofVector.uPixelSec * self.camParams.pixelSize,
+            ofVector.vPixelSec * self.camParams.pixelSize
+        ], dtype=np.float32)
+
+        PpPprime_ms = np.array([Pprime_ms[0]/norm_a, Pprime_ms[1]/norm_a, 0.0], dtype=np.float32)
+
+        dot_val = np.dot(PpPprime_ms, ofVector.directionVector)
+        P = PpPprime_ms - dot_val * ofVector.directionVector
+
+        # rotation term
+        cross_val = np.cross(gyro_cam, ofVector.directionVector)
+        RotOF = -cross_val
+
+        ofVector.P = P - RotOF
+
+        OF_derotated = self._getDerotatedOF_ms_events(ofVector.P, ofVector.directionVector, ofVector.AMeter)
+
+        derotNextX = ofVector.position[0] + OF_derotated[0]*self.deltaTms/(self.camParams.pixelSize*1e3)
+        derotNextY = ofVector.position[1] + OF_derotated[1]*self.deltaTms/(self.camParams.pixelSize*1e3)
+
+        ofVector.nextPosition = (derotNextX, derotNextY)
+        ofVector.deltaX = derotNextX - ofVector.position[0]
+        ofVector.deltaY = derotNextY - ofVector.position[1]
 
 
-    def plot_of_magnitudes(self, filename):
-        magnitudes = [entry["magnitude"] for entry in self.of_magnitudes]
-        N_vectors = [entry["N_vectors"] for entry in self.of_magnitudes]
-        dt_ms = [entry["dt_ms"] for entry in self.of_magnitudes]
-        
+    def _getDerotatedOF_ms_events(self, P_derotated, d_direction, aVector):
+        dot_val = np.dot(P_derotated, d_direction)
+        Pprime = P_derotated + dot_val*d_direction
+        scale = np.linalg.norm(aVector)
+        Pprime *= scale
+        return np.array([Pprime[0], Pprime[1]], dtype=np.float32)
 
-        # Create figure with 3 rows, custom height ratios
-        fig = plt.figure(figsize=(14, 8))
-        gs = fig.add_gridspec(3, 1, height_ratios=[3, 3, 1])  # last row smaller
 
-        # --- Row 1: Magnitudes ---
-        ax1 = fig.add_subplot(gs[0, 0])
-        ax1.plot(magnitudes, label='Optical Flow Magnitude (pixels/frame)')
-        ax1.set_xlabel('Frame Index')
-        ax1.set_ylabel('Magnitude (pixels/frame)')
-        ax1.set_title('Optical Flow Magnitude over Time')
-        ax1.legend()
-        ax1.grid()
+    def _estimateDepth(self, ofVector, T_cam):
+        TdotD = np.dot(T_cam, ofVector.directionVector)
+        tmp = T_cam - TdotD * ofVector.directionVector
+        num = np.linalg.norm(tmp)
+        denom = np.linalg.norm(ofVector.P)
+        if denom < 1e-9:
+            return float('nan')
+        return num / denom
 
-        # --- Row 2: dt_ms ---
-        ax2 = fig.add_subplot(gs[1, 0])
-        ax2.plot(dt_ms, label='Delta Time (ms)', color='green')
-        ax2.set_xlabel('Frame Index')
-        ax2.set_ylabel('Δt (ms)')
-        ax2.set_title('Adaptive Slicing Δt (ms)')
-        ax2.legend()
-        ax2.grid()
 
-        # --- Row 3: Number of vectors (smaller height) ---
-        ax3 = fig.add_subplot(gs[2, 0])
-        ax3.plot(N_vectors, label='Number of Filtered Vectors', color='orange')
-        ax3.set_xlabel('Frame Index')
-        ax3.set_ylabel('N vectors')
-        ax3.set_title('Filtered OF Vectors Count')
-        ax3.legend()
-        ax3.grid()
-
-        plt.tight_layout()
-        plt.savefig(f"{filename}.png", dpi=250)
-        plt.close()
-
-        print(f"[VisionNodeEventsPlayback] Saved OF magnitude plot to {filename}.png")
+    def _estimateAltitude(self, ofVector, depth):
+        directionVector_body = camToBody(ofVector.directionVector, self.camParams)
+        directionVector_inertial = bodyToInertial(
+            directionVector_body,
+            self.cosRoll, self.sinRoll,
+            self.cosPitch, self.sinPitch
+        )
+        cosTheta = directionVector_inertial[2]
+        return depth * cosTheta
