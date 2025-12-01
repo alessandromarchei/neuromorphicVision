@@ -25,8 +25,6 @@ VALID_FRAME_RANGES = {
     "day1_events": (1724173779479876, 1724173860879876),
     "day2_events": (1724175809154063, 1724175902754063),
     "day3_events": (1724314265805073, 1724314359805073),
-    "day4_events": (150, 580),
-    "night1_events":   (0, 11750)
 }
 
 
@@ -138,16 +136,18 @@ def dvxplorer_evs_iterator(
     t0_us = ts_us_buf[0]
     t_end_us = int(float(evs["t"][-1]))
 
-    frame_idx = 0
     while t0_us < t_end_us:
 
         if valid_frame_range is not None:
-            start_i, end_i = valid_frame_range
-            if frame_idx < start_i:
-                frame_idx += 1
+            start_us, end_us = valid_frame_range
+
+            # Skip slices that start before the valid timestamp window
+            if t0_us < start_us:
                 t0_us += dt_us
                 continue
-            if frame_idx > end_i:
+
+            # Stop when we go beyond the valid timestamp window
+            if t0_us > end_us:
                 break
 
 
