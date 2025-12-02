@@ -236,3 +236,95 @@ def compute_direction_vector(pos, cam_params):
         return np.array([0.0, 0.0, 0.0], dtype=float)
     return a / norm_a
 
+
+def quat_to_rotmat(qx, qy, qz, qw):
+    """
+    Quaternion (qx,qy,qz,qw) -> rotation matrix R_WC (camera -> world).
+    """
+    # normalizza per sicurezza
+    norm = np.sqrt(qw*qw + qx*qx + qy*qy + qz*qz)
+    qw /= norm
+    qx /= norm
+    qy /= norm
+    qz /= norm
+
+    # convenzione w,x,y,z
+    w, x, y, z = qw, qx, qy, qz
+
+    R = np.array([
+        [1 - 2*(y*y + z*z),     2*(x*y - z*w),         2*(x*z + y*w)],
+        [    2*(x*y + z*w),  1 - 2*(x*x + z*z),        2*(y*z - x*w)],
+        [    2*(x*z - y*w),      2*(y*z + x*w),    1 - 2*(x*x + y*y)]
+    ], dtype=np.float64)
+    return R
+
+
+def quat_to_euler(qx, qy, qz, qw):
+    """
+    quaternion → (roll, pitch, yaw) in radians
+
+    Convention:
+      roll  : rotation around X
+      pitch : rotation around Y
+      yaw   : rotation around Z
+    """
+
+    # normalize quaternion
+    norm = np.sqrt(qw*qw + qx*qx + qy*qy + qz*qz)
+    qw /= norm
+    qx /= norm
+    qy /= norm
+    qz /= norm
+
+    # roll (x-axis)
+    sinr = 2.0 * (qw*qx + qy*qz)
+    cosr = 1.0 - 2.0*(qx*qx + qy*qy)
+    roll = np.arctan2(sinr, cosr)
+
+    # pitch (y-axis)
+    sinp = 2.0*(qw*qy - qz*qx)
+    if abs(sinp) >= 1:
+        pitch = np.pi/2 * np.sign(sinp)    # numerical clamp
+    else:
+        pitch = np.arcsin(sinp)
+
+    # yaw (z-axis)
+    siny = 2.0*(qw*qz + qx*qy)
+    cosy = 1.0 - 2.0*(qy*qy + qz*qz)
+    yaw = np.arctan2(siny, cosy)
+
+    return roll, pitch, yaw
+
+
+def compute_attitude_trig(gt_cam_state_slice):
+    """
+    Compute cosRoll, sinRoll, cosPitch, sinPitch
+    from quaternion orientation in GT cam slice.
+    """
+
+    if len(gt_cam_state_slice) == 0:
+        return 1.0, 0.0, 1.0, 0.0  # identity
+
+    qx = np.asarray(gt_cam_state_slice["qx"], dtype=np.float64)
+    qy = np.asarray(gt_cam_state_slice["qy"], dtype=np.float64)
+    qz = np.asarray(gt_cam_state_slice["qz"], dtype=np.float64)
+    qw = np.asarray(gt_cam_state_slice["qw"], dtype=np.float64)
+
+    N = qx.shape[0]
+    rolls = np.zeros(N)
+    pitches = np.zeros(N)
+
+    for i in range(N):
+        roll, pitch, _ = quat_to_euler(qx[i], qy[i], qz[i], qw[i])
+        rolls[i] = roll
+        pitches[i] = pitch
+
+    roll_mean = np.mean(rolls)
+    pitch_mean = np.mean(pitches)
+
+    cosRoll = np.cos(roll_mean)
+    sinRoll = np.sin(roll_mean)
+    cosPitch = np.cos(pitch_mean)
+    sinPitch = np.sin(pitch_mean)
+
+    return cosRoll, sinRoll, cosPitch, sinPitch
