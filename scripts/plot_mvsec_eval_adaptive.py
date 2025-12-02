@@ -20,6 +20,76 @@ BASELINE_REGEX = re.compile(
     re.IGNORECASE
 )
 
+# =======================================================================
+# NEW: BEST CONFIG FOR INDOOR (3 SCENES) AND OUTDOOR
+# =======================================================================
+def select_best_indoor_outdoor(per_scene_adapt):
+    """
+    Indoor:
+      - consider scenes whose name starts with 'indoor'
+      - we require a config to:
+          * appear in ALL indoor scenes
+          * have dAEE < 0 in ALL indoor scenes (always improves)
+      - among those, pick the one with the most negative average dAEE
+
+    Outdoor:
+      - for each outdoor scene (e.g. 'outdoor1')
+      - pick config with most negative dAEE
+    """
+    indoor_scenes = [s for s in per_scene_adapt.keys() if s.lower().startswith("indoor")]
+    outdoor_scenes = [s for s in per_scene_adapt.keys() if s.lower().startswith("outdoor")]
+
+    # ---------------- INDOOR ----------------
+    indoor_config_to_daeelist = defaultdict(list)  # cfg -> [(scene, dAEE), ...]
+
+    for scene in indoor_scenes:
+        for r in per_scene_adapt[scene]:
+            if "dAEE" in r:
+                indoor_config_to_daeelist[r["config_id"]].append((scene, r["dAEE"]))
+
+    indoor_candidates = []
+    for cfg, lst in indoor_config_to_daeelist.items():
+        # must appear in ALL indoor scenes
+        if len(lst) != len(indoor_scenes):
+            continue
+        dvals = [d for (_, d) in lst]
+        # must improve in all scenes
+        if not all(d < 0 for d in dvals):
+            continue
+
+        avg_dAEE = float(np.mean(dvals))
+        max_dAEE = float(max(dvals))  # worst case (closest to 0)
+
+        indoor_candidates.append({
+            "config_id": cfg,
+            "avg_dAEE": avg_dAEE,
+            "max_dAEE": max_dAEE,
+            "per_scene_dAEE": {scene: d for (scene, d) in lst},
+        })
+
+    best_indoor = None
+    if indoor_candidates:
+        # choose cfg with MOST negative average dAEE
+        best_indoor = min(indoor_candidates, key=lambda x: x["avg_dAEE"])
+
+    # ---------------- OUTDOOR ----------------
+    best_outdoor_per_scene = {}
+    for scene in outdoor_scenes:
+        runs = [r for r in per_scene_adapt[scene] if "dAEE" in r]
+        if not runs:
+            continue
+        # config with most negative dAEE in that outdoor scene
+        best = min(runs, key=lambda x: x["dAEE"])
+        best_outdoor_per_scene[scene] = {
+            "config_id": best["config_id"],
+            "dAEE": best["dAEE"],
+            "dREE": best.get("dREE", np.nan),
+        }
+
+    return best_indoor, best_outdoor_per_scene
+
+
+
 def parse_run_name(name):
     """
     Detect adaptive slicing (new scheme) or baseline dtX.
@@ -183,10 +253,10 @@ def compute_global(global_list, config_list):
         g = grouped[cfg]
         out.append({
             "config_id": cfg,
-            "mean_aee": float(np.mean(g["mean_aee"])),
-            "median_aee": float(np.median(g["median_aee"])),
-            "mean_ree": float(np.mean(g["mean_ree"])),
-            "median_ree": float(np.median(g["median_ree"]))
+            "mean_aee": float(np.mean(g["mean_aee"])) if g["mean_aee"] else np.nan,
+            "median_aee": float(np.median(g["median_aee"])) if g["median_aee"] else np.nan,
+            "mean_ree": float(np.mean(g["mean_ree"])) if g["mean_ree"] else np.nan,
+            "median_ree": float(np.median(g["median_ree"])) if g["median_ree"] else np.nan
         })
 
     return out
@@ -208,6 +278,45 @@ def print_summary(title, records):
               f"{r['median_ree']:8.4f} | "
               f"{dAEE:8.4f} | "
               f"{dREE:8.4f}")
+
+
+# =======================================================================
+# NEW: BEST CONFIG SELECTION PER SCENE
+# =======================================================================
+def select_best_configs(per_scene_adapt):
+    """
+    For each scene, select:
+      - config with best (most negative) ΔAEE
+      - config with best (most negative) ΔREE
+      - config with best tradeoff (closest to origin in ΔAEE–ΔREE plane)
+    """
+    best_summary = {}
+
+    for scene, runs in per_scene_adapt.items():
+        # keep only runs that actually have dAEE/dREE
+        valid = [r for r in runs if "dAEE" in r and "dREE" in r]
+        if not valid:
+            continue
+
+        # Best ΔAEE (most negative dAEE)
+        best_dAEE = min(valid, key=lambda x: x["dAEE"])
+
+        # Best ΔREE (most negative dREE)
+        best_dREE = min(valid, key=lambda x: x["dREE"])
+
+        # Best tradeoff: minimize Euclidean distance from (0, 0)
+        best_tradeoff = min(
+            valid,
+            key=lambda x: np.hypot(x["dAEE"], x["dREE"])
+        )
+
+        best_summary[scene] = {
+            "best_dAEE": best_dAEE,
+            "best_dREE": best_dREE,
+            "best_tradeoff": best_tradeoff,
+        }
+
+    return best_summary
 
 
 # =======================================================================
@@ -253,8 +362,8 @@ def plot_combined(per_scene_adapt, per_scene_baseline, global_row, config_list, 
         # baseline
         if scene in per_scene_baseline:
             b = per_scene_baseline[scene][0]
-            ax1.axhline(b["mean_aee"], linestyle="--", color="tab:blue", label="Baseline AEE")
-            ax2.axhline(b["median_ree"], linestyle="--", color="tab:green", label="Baseline REE")
+            ax1.axhline(b["mean_aee"], linestyle="--", color="tab:blue", label="AEE dt=1")
+            ax2.axhline(b["median_ree"], linestyle="--", color="tab:green", label="REE dt=1")
 
         ax1.set_title(f"{scene} – Mean AEE vs Median REE")
         ax1.set_ylabel("AEE", color="tab:blue")
@@ -272,6 +381,7 @@ def plot_combined(per_scene_adapt, per_scene_baseline, global_row, config_list, 
     fig.savefig(os.path.join(out_dir, "eval_adaptive.png"), dpi=250)
 
     print(f"[PLOT] Saved → {os.path.join(out_dir, 'eval_adaptive.png')}")
+
 
 def plot_deltas(per_scene_adapt, config_list, out_dir):
     scenes = sorted(per_scene_adapt.keys())
@@ -336,6 +446,59 @@ def plot_delta_scatter(per_scene_adapt, out_dir):
 
 
 # =======================================================================
+# NEW: COOL PLOT HIGHLIGHTING BEST CONFIGS
+# =======================================================================
+def plot_best_configs(per_scene_adapt, best_summary, out_dir):
+    """
+    For each scene, make a ΔAEE–ΔREE scatter and highlight:
+      - best ΔAEE (red star)
+      - best ΔREE (green star)
+      - best tradeoff (blue diamond)
+    """
+    os.makedirs(out_dir, exist_ok=True)
+
+    for scene, runs in per_scene_adapt.items():
+        if scene not in best_summary:
+            continue
+
+        fig = plt.figure(figsize=(8, 8))
+        dAEE = [r["dAEE"] for r in runs]
+        dREE = [r["dREE"] for r in runs]
+        labels = [r["config_id"] for r in runs]
+
+        # all points
+        plt.scatter(dAEE, dREE, s=50, alpha=0.5, label="All configs")
+
+        # winners
+        bA = best_summary[scene]["best_dAEE"]
+        bR = best_summary[scene]["best_dREE"]
+        bT = best_summary[scene]["best_tradeoff"]
+
+        plt.scatter([bA["dAEE"]], [bA["dREE"]], s=200, marker="*", color="red", label="Best ΔAEE")
+        plt.scatter([bR["dAEE"]], [bR["dREE"]], s=200, marker="*", color="green", label="Best ΔREE")
+        plt.scatter([bT["dAEE"]], [bT["dREE"]], s=160, marker="D", color="blue", label="Best tradeoff")
+
+        # zero-lines
+        plt.axvline(0, linestyle="--", color="black", linewidth=1)
+        plt.axhline(0, linestyle="--", color="black", linewidth=1)
+
+        # annotate all configs (small font)
+        for x, y, lb in zip(dAEE, dREE, labels):
+            plt.annotate(lb, (x, y), fontsize=6, alpha=0.8)
+
+        plt.title(f"{scene} — Best Configs (ΔAEE vs ΔREE)")
+        plt.xlabel("ΔAEE (negative = better)")
+        plt.ylabel("ΔREE (negative = better)")
+        plt.grid(True, alpha=0.4)
+        plt.legend(loc="best")
+
+        path = os.path.join(out_dir, f"{scene}_best_configs.png")
+        plt.savefig(path, dpi=250)
+        plt.close()
+        print(f"[PLOT] Saved best-config plot → {path}")
+
+
+# =======================================================================
 # MAIN
 # =======================================================================
 def main():
@@ -355,12 +518,52 @@ def main():
         sorted_scene = sorted(per_scene_adapt[scene], key=lambda x: x["config_id"])
         print_summary(f"SCENE {scene.upper()}", sorted_scene)
 
-    plot_combined(per_scene_adapt, per_scene_baseline, global_row, config_list, args.out_dir)
+        # ------------------------------------------------------------------
+    # NEW: select best configs per scene
+    # ------------------------------------------------------------------
+    best_summary = select_best_configs(per_scene_adapt)
 
-    #adding the plot delta and plot scatter functions
+    print("\n===================== BEST CONFIGS PER SCENE =====================")
+    for scene in sorted(best_summary.keys()):
+        b = best_summary[scene]
+        print(f"\n[SCENE] {scene}")
+        print(f"  -> Best ΔAEE      : {b['best_dAEE']['config_id']}  "
+              f"dAEE={b['best_dAEE']['dAEE']:.4f}, dREE={b['best_dAEE']['dREE']:.4f}")
+        print(f"  -> Best ΔREE      : {b['best_dREE']['config_id']}  "
+              f"dAEE={b['best_dREE']['dAEE']:.4f}, dREE={b['best_dREE']['dREE']:.4f}")
+        print(f"  -> Best tradeoff  : {b['best_tradeoff']['config_id']}  "
+              f"dAEE={b['best_tradeoff']['dAEE']:.4f}, dREE={b['best_tradeoff']['dREE']:.4f}")
+
+    # ------------------------------------------------------------------
+    # NEW: best config for INDOOR (3 scenes) and OUTDOOR
+    # ------------------------------------------------------------------
+    best_indoor, best_outdoor = select_best_indoor_outdoor(per_scene_adapt)
+
+    print("\n===================== GLOBAL BEST FOR INDOOR / OUTDOOR =====================")
+
+    if best_indoor is not None:
+        print("\n[INDOOR] Best config that improves AEE in ALL indoor scenes:")
+        print(f"  Config ID: {best_indoor['config_id']}")
+        print(f"  Avg dAEE over indoor scenes: {best_indoor['avg_dAEE']:.4f} (more negative = better)")
+        print(f"  Worst dAEE over indoor scenes: {best_indoor['max_dAEE']:.4f}")
+        print("  Per-scene dAEE:")
+        for scene, d in best_indoor["per_scene_dAEE"].items():
+            print(f"    - {scene}: dAEE={d:.4f}")
+    else:
+        print("\n[INDOOR] No single config improves AEE in ALL indoor scenes with dAEE < 0.")
+
+    for scene, info in best_outdoor.items():
+        print(f"\n[OUTDOOR] Scene {scene}: best config by dAEE:")
+        print(f"  Config ID: {info['config_id']}")
+        print(f"  dAEE={info['dAEE']:.4f}, dREE={info['dREE']:.4f}")
+
+    # existing plots
+    plot_combined(per_scene_adapt, per_scene_baseline, global_row, config_list, args.out_dir)
     plot_deltas(per_scene_adapt, config_list, args.out_dir)
     plot_delta_scatter(per_scene_adapt, args.out_dir)
 
+    # NEW: cool Pareto plots with best highlighted
+    plot_best_configs(per_scene_adapt, best_summary, args.out_dir)
 
 
 if __name__ == "__main__":
