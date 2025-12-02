@@ -15,7 +15,7 @@ from testing.utils.eval_utils import run_event_frame
 # Entry point
 # ------------------------------
 if __name__ == "__main__":
-    fpv_scene_dir = "/home/alessandro/datasets/fpv/indoor_45_12_davis_with_gt"
+    fpv_scene_dir = "/home/alessandro/datasets/fpv/indoor_45_13_davis_with_gt"
     
     run_event_frame(fpv_scene_dir, viz=True, iterator=fpv_evs_iterator(fpv_scene_dir))
     print("All done.")
