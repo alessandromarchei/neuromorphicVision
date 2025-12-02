@@ -48,7 +48,6 @@ if __name__ == "__main__":
     # -------------------------------------------------------
     node = VisionNodeDVXEventsPlayback(args.yaml)
     node.run()
-    node.cleanNaNEntries()
 
     # capture final report printing
     final_report = []
@@ -56,12 +55,6 @@ if __name__ == "__main__":
     def capture_print(*msgs):
         txt = " ".join(str(m) for m in msgs)
         final_report.append(txt)
-
-    import builtins
-    old_print = builtins.print
-    builtins.print = capture_print
-    node.printFinalReport()
-    builtins.print = old_print
 
     # print final report normally
     for line in final_report:

@@ -96,21 +96,29 @@ def analyze_runs(root_dir):
     all_configs = set()
     global_list = []
 
+    dirs = os.listdir(root_dir)
+    for idx, folder in enumerate(dirs):
+        print(f"[INFO] Found run {idx+1}/{len(dirs)}: {folder}")
+
     for folder in os.listdir(root_dir):
         run_path = os.path.join(root_dir, folder)
         if not os.path.isdir(run_path):
+            print(f"[WARN] Skipping non-directory: {run_path}, not a run folder.")
             continue
 
         parsed = parse_run_name(folder)
         if parsed is None:
+            print(f"[WARN] Could not parse run name: {folder}")
             continue
 
         log_path = os.path.join(run_path, "logs.log")
         if not os.path.exists(log_path):
+            print(f"[WARN] Missing logs.log in run folder: {run_path}")
             continue
 
         metrics = parse_logs(log_path)
         if metrics is None:
+            print(f"[WARN] Could not parse logs.log in run folder: {run_path}")
             continue
 
         record = {
@@ -280,8 +288,8 @@ def plot_deltas(per_scene_adapt, config_list, out_dir):
         ax1.plot(config_list, dAEE, marker="o", color="tab:blue", label="ΔAEE")
         ax2.plot(config_list, dREE, marker="x", color="tab:red", label="ΔREE")
 
-        ax1.axhline(0, linestyle="--", color="black")
-        ax2.axhline(0, linestyle="--", color="black")
+        ax1.axhline(0, linestyle="--", color="tab:blue")
+        ax2.axhline(0, linestyle="--", color="tab:red")
 
         plt.setp(ax1.get_xticklabels(), rotation=90)
 
@@ -332,8 +340,8 @@ def plot_delta_scatter(per_scene_adapt, out_dir):
 # =======================================================================
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--runs_dir", type=str, default="runs_mvsec_adaptive")
-    parser.add_argument("--out_dir", type=str, default="analysis_plots_pid_config")
+    parser.add_argument("--runs_dir", type=str, default="results/runs_mvsec_adaptive")
+    parser.add_argument("--out_dir", type=str, default="analysis_plots_adaptive_mvsec")
     args = parser.parse_args()
 
     per_scene_adapt, per_scene_baseline, config_list, global_list = analyze_runs(args.runs_dir)

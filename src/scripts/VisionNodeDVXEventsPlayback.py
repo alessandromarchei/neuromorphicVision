@@ -184,6 +184,7 @@ class VisionNodeDVXEventsPlayback:
             self.camParams.cx = cam.get("cx", 173.9835140415677)
             self.camParams.cy = cam.get("cy", 134.63020721240977)
             self.camParams.pixelSize = cam.get("pixelSize", 9e-6)
+            self.camParams.inclination = cam.get("inclination", 45.0)
 
         # LK
         if "LK" in self.config:
@@ -404,16 +405,16 @@ class VisionNodeDVXEventsPlayback:
 
         # 3) GT altitude from PX4
         # px4_state_slice is a dict of arrays → take mean if exists
-        if "DistanceGround" in px4_state_slice:
-            gt_alt = float(np.mean(px4_state_slice["DistanceGround"]))
-        elif "Lidar" in px4_state_slice:
+        # if "DistanceGround" in px4_state_slice:
+        #     gt_alt = float(np.mean(px4_state_slice["DistanceGround"]))
+        if "Lidar" in px4_state_slice:
             gt_alt = float(np.mean(px4_state_slice["Lidar"]))
         elif "distance_ground" in px4_state_slice:
             gt_alt = float(np.mean(px4_state_slice["distance_ground"]))
         else:
             gt_alt = float("nan")   # no GT available
 
-        print(f"[Altitude] t={curr_t} us | est={est_alt:.3f} m | gt={gt_alt:.3f} m")
+        print(f"[Altitude] t={curr_t} us | est={est_alt:.3f} m | gt lidar={gt_alt:.3f} m")
 
 
     # --------------------------------------------------------

@@ -22,12 +22,20 @@ from testing.utils.event_utils import to_event_frame
 DEFAULT_MAX_EVENTS_LOADED = 1_000_000
 DEFAULT_BATCH_EVENTS = 2_000_000
 
-# valid timestamp ranges for each DVX scene (in microseconds)
+# valid timestamp ranges for each DVX scene (in microseconds). debugging purposes
 VALID_FRAME_RANGES = {
     "day1_events": (1724173779479876, 1724173860879876),
     "day2_events": (1724175809154063, 1724175902754063),
     "day3_events": (1724314265805073, 1724314359805073),
 }
+
+# # valid timestamp ranges for each DVX scene (in microseconds). OG
+# VALID_FRAME_RANGES = {
+#     "day1_events": (1724173779479876, 1724173860879876),
+#     "day2_events": (1724175809154063, 1724175902754063),
+#     "day3_events": (1724314265805073, 1724314359805073),
+# }
+
 
 
 def get_valid_range_from_scene(scenedir):

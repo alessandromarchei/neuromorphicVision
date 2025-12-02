@@ -106,7 +106,7 @@ class CameraParams:
         self.cx = 320.0
         self.cy = 240.0
         self.pixelSize = 1.0e-5
-        self.inclination = 0.0
+        self.inclination = 45.0
         self.exposureTime = 20000.0  # microseconds
 
 class LKParams:
