@@ -42,9 +42,6 @@ from src.scripts.functions import (
     compute_attitude_trig
 )
 
-Z_OFFSET_FPV_CAM = 1.0  # meters. value to add to GT altitude from UZH-FPV dataset, since at rest, the drone measures ~-1 m in "pz" coordinate
-
-
 # ============================================================
 # VisionNodeEventsPlayback
 # ============================================================
@@ -353,8 +350,6 @@ class VisionNodeUZHFPVEventsPlayback:
         # 1) Average IMU over time window
         self.curr_gyro_cam = self._get_imu(cam_imu_slice)
 
-        print(f"[IMU] t={t_us} us | gyro_cam = [{self.curr_gyro_cam[0]:.3f}, {self.curr_gyro_cam[1]:.3f}, {self.curr_gyro_cam[2]:.3f}] rad/s")
-
         # 2) Extract velocity from GT cam state. so velocity is already in camera frame.
         self.curr_velocity_cam = self._gt_velocity_to_cam(gt_cam_state_slice)
 
@@ -371,12 +366,20 @@ class VisionNodeUZHFPVEventsPlayback:
 
         self._calculateOpticalFlow(self.currFrame)
 
+
+        #loggin data
+        # Print gyro in deg/s
+        gyro_deg = np.degrees(self.curr_gyro_cam)
+        print(f"[IMU] t={t_us} us \t \t \t| gyro_cam = \t[{gyro_deg[0]:.3f}, {gyro_deg[1]:.3f}, {gyro_deg[2]:.3f}] deg/s")
+        print(f"[GT Vel] t={t_us} us \t \t \t| vel_cam = \t[{self.curr_velocity_cam[0]:.3f}, {self.curr_velocity_cam[1]:.3f}, {self.curr_velocity_cam[2]:.3f}] m/s")
+        print(f"[GT Cam Position] t={t_us} us \t| pos_cam = \t[{np.mean(gt_cam_state_slice.get('px', 0.0)):.3f}, {np.mean(gt_cam_state_slice.get('py', 0.0)):.3f}, {np.mean(gt_cam_state_slice.get('pz', 0.0)):.3f}] m")
+        print("")
+
         #apply visualization eventually
         if self.visualizeImage:
             visualize_image(self.currFrame,self.currPoints,self.prevPoints,self.status)
             visualize_filtered_flow(self.currFrame, self.filteredFlowVectors, win_name="OF_filtered")
             cv2.waitKey(self.delayVisualize)
-
 
 
         self.prevPoints.clear()
@@ -439,7 +442,7 @@ class VisionNodeUZHFPVEventsPlayback:
 
         # 3) GT altitude from GT state, using "pz". it points upwards. the z value is set around 1 meters above ground, so sum up 1.0 m
         if "pz" in gt_cam_state_slice:
-            gt_alt = float(np.mean(gt_cam_state_slice["pz"])) + Z_OFFSET_FPV_CAM
+            gt_alt = float(np.mean(gt_cam_state_slice["pz"])) + self.initial_altitude_offset
         else:
             gt_alt = float("nan")   # no GT available
 
