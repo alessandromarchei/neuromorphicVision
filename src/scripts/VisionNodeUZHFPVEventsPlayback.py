@@ -39,6 +39,7 @@ from src.scripts.functions import (
     LPFilter,
     complementaryFilter,
     quat_to_rotmat,
+    quat_to_euler,
     compute_attitude_trig
 )
 
@@ -147,7 +148,6 @@ class VisionNodeUZHFPVEventsPlayback:
         #print on screen the self.config for verification
         print("Loaded configuration:")
         print(yaml.dump(self.config, default_flow_style=False))
-
     # --------------------------------------------------------
     # YAML
     # --------------------------------------------------------
@@ -328,14 +328,14 @@ class VisionNodeUZHFPVEventsPlayback:
 
             print(f"Current event frame timestamp : {t_us} us, dt_ms={dt_ms:.2f}")
 
-            self._processEventFrame(event_frame, t_us, cam_imu, gt_cam_state)
+            self._processEventFrame(event_frame, t_us, cam_imu, gt_cam_state, gt_state)
             self.frameID += 1
 
 
     # --------------------------------------------------------
     # Processa UN event frame (come processFrames(), ma senza altitude)
     # --------------------------------------------------------
-    def _processEventFrame(self, event_frame, t_us, cam_imu_slice, gt_cam_state_slice):
+    def _processEventFrame(self, event_frame, t_us, cam_imu_slice, gt_cam_state_slice, gt_state_slice=None):
         """
         Per ora: optical flow + feature detection, esattamente come nel caso frames.
         (La GT è già in self.current_gt_flow se disponibile.)
@@ -351,10 +351,11 @@ class VisionNodeUZHFPVEventsPlayback:
         self.curr_gyro_cam = self._get_imu(cam_imu_slice)
 
         # 2) Extract velocity from GT cam state. so velocity is already in camera frame.
-        self.curr_velocity_cam = self._gt_velocity_to_cam(gt_cam_state_slice)
+        self.curr_velocity_cam = self._gt_velocity_to_cam(gt_state_slice)
+        self.curr_velocity_body = self._gt_velocity_and_attitude(gt_state_slice)
 
         # 3) Needed for altitude orientation
-        self.cosRoll, self.sinRoll, self.cosPitch, self.sinPitch = compute_attitude_trig(gt_cam_state_slice)
+        self.cosRoll, self.sinRoll, self.cosPitch, self.sinPitch = compute_attitude_trig(gt_state_slice)
 
 
         # se è il primissimo frame, inizializza solo i punti
@@ -370,10 +371,12 @@ class VisionNodeUZHFPVEventsPlayback:
         #loggin data
         # Print gyro in deg/s
         gyro_deg = np.degrees(self.curr_gyro_cam)
-        print(f"[IMU] t={t_us} us \t \t \t| gyro_cam = \t[{gyro_deg[0]:.3f}, {gyro_deg[1]:.3f}, {gyro_deg[2]:.3f}] deg/s")
-        print(f"[GT Vel] t={t_us} us \t \t \t| vel_cam = \t[{self.curr_velocity_cam[0]:.3f}, {self.curr_velocity_cam[1]:.3f}, {self.curr_velocity_cam[2]:.3f}] m/s")
-        print(f"[GT Cam Position] t={t_us} us \t| pos_cam = \t[{np.mean(gt_cam_state_slice.get('px', 0.0)):.3f}, {np.mean(gt_cam_state_slice.get('py', 0.0)):.3f}, {np.mean(gt_cam_state_slice.get('pz', 0.0)):.3f}] m")
-        print("")
+        # print(f"[IMU] t={t_us} us \t \t \t| gyro_cam = \t[{gyro_deg[0]:.3f}, {gyro_deg[1]:.3f}, {gyro_deg[2]:.3f}] deg/s")
+        # print(f"[GT CAM VELOCITY] t={t_us} us \t \t| vel_cam = [{self.curr_velocity_cam[0]:.3f}, {self.curr_velocity_cam[1]:.3f}, {self.curr_velocity_cam[2]:.3f}] m/s")
+        # print(f"[GT BODY VELOCITY] t={t_us} us \t \t| vel_body = [{self.curr_velocity_body[0]:.3f}, {self.curr_velocity_body[1]:.3f}, {self.curr_velocity_body[2]:.3f}] m/s")
+        # print(f"[GT Cam Position] t={t_us} us \t| pos_cam = \t[{np.mean(gt_cam_state_slice.get('px', 0.0)):.3f}, {np.mean(gt_cam_state_slice.get('py', 0.0)):.3f}, {np.mean(gt_cam_state_slice.get('pz', 0.0)):.3f}] m")
+        # print(f"[Attitude] t={t_us} us \t \t| roll={math.degrees(math.acos(self.cosRoll)):.3f} deg, pitch={math.degrees(math.acos(self.cosPitch)):.3f} deg")
+
 
         #apply visualization eventually
         if self.visualizeImage:
@@ -545,21 +548,6 @@ class VisionNodeUZHFPVEventsPlayback:
         return gyro
 
 
-    def _gt_velocity_to_cam(self, gt_cam_state_slice):
-        """
-        gt_cam_state_slice holds px, py, pz of the camera with respect to the inertial frame.
-        Compute velocity in 
-        """
-        if len(gt_cam_state_slice) == 0:
-            return np.zeros(3, dtype=np.float32)
-
-        vx = np.mean(gt_cam_state_slice.get("Airspeed", 0.0))
-        vy = 0.0
-        vz = 0.0
-
-        vel_frd = np.array([vx, vy, vz], dtype=np.float32)
-        return bodyToCam(vel_frd, self.camParams)
-
     def _applyDerotation3D_events(self, ofVector, gyro_cam):
         """
         Same as applyDerotation3D from frames version,
@@ -673,6 +661,104 @@ class VisionNodeUZHFPVEventsPlayback:
         # velocità media nello slice (in camera frame)
         v_cam_mean = v_C.mean(axis=0).astype(np.float32)
         return v_cam_mean
+    
+
+    def _gt_velocity_and_attitude(self,
+                              gt_state_slice,
+                              quat_is_body_to_world=True):
+
+        if len(gt_state_slice) < 2:
+            return np.zeros(3, dtype=np.float32)
+
+        # === extract arrays ===
+        t_us = np.asarray(gt_state_slice["timestamp"], dtype=np.int64)
+        pos = np.vstack([gt_state_slice["px"],
+                        gt_state_slice["py"],
+                        gt_state_slice["pz"]]).T
+
+        dt = (t_us[-1] - t_us[0]) * 1e-6
+        if dt <= 0:
+            return np.zeros(3, dtype=np.float32)
+
+        # === world velocity ===
+        dp_W = pos[-1] - pos[0]
+        v_W  = dp_W / dt
+
+        # === orientation at midpoint ===
+        mid_idx = len(t_us) // 2
+        qx = gt_state_slice["qx"][mid_idx]
+        qy = gt_state_slice["qy"][mid_idx]
+        qz = gt_state_slice["qz"][mid_idx]
+        qw = gt_state_slice["qw"][mid_idx]
+
+        R_WB = quat_to_rotmat(qx, qy, qz, qw)
+
+        # convert to body velocity if needed
+        if quat_is_body_to_world:
+            v_B = R_WB.T @ v_W
+        else:
+            v_B = R_WB @ v_W
+
+        # === extract Euler ===
+        roll, pitch, yaw = quat_to_euler(qx, qy, qz, qw)  # radians
+        roll_deg  = np.degrees(roll)
+        pitch_deg = np.degrees(pitch)
+        yaw_deg   = np.degrees(yaw)
+
+        print(f"[GT] roll = {roll_deg:.2f} deg, pitch = {pitch_deg:.2f} deg, yaw = {yaw_deg:.2f} deg")
+        print(f"[GT] v_W = [{v_W[0]:.3f}, {v_W[1]:.3f}, {v_W[2]:.3f}] m/s")
+        print(f"[GT] v_B = [{v_B[0]:.3f}, {v_B[1]:.3f}, {v_B[2]:.3f}] m/s")
+
+        return v_B.astype(np.float32)
+
+
+    def _gt_velocity_to_body(self,
+                            gt_state_slice,
+                            quat_is_body_to_world=True,
+                            output_convention="FLU"):
+
+        if len(gt_state_slice) < 2:
+            return np.zeros(3, dtype=np.float32)
+
+        t_us = np.asarray(gt_state_slice["timestamp"], dtype=np.int64)
+        pos = np.vstack([gt_state_slice["px"],
+                        gt_state_slice["py"],
+                        gt_state_slice["pz"]]).T
+
+        dt = (t_us[-1] - t_us[0]) * 1e-6
+        if dt <= 0:
+            return np.zeros(3, dtype=np.float32)
+
+        # world velocity
+        dp_W = pos[-1] - pos[0]
+        # print(f"[POS WORLD] pos_W: {pos[-1]} m")
+        # print(f"[delta POS WORLD] dp_W: {dp_W} ")
+        
+
+        v_W = dp_W / dt
+
+        # use midpoint orientation (better instantaneous estimate)
+        mid_idx = len(t_us) // 2
+        q = [gt_state_slice["qx"][mid_idx],
+            gt_state_slice["qy"][mid_idx],
+            gt_state_slice["qz"][mid_idx],
+            gt_state_slice["qw"][mid_idx]]
+
+        R_WB = quat_to_rotmat(*q)
+
+        # convert to body frame
+        if quat_is_body_to_world:
+            v_B = R_WB.T @ v_W  # world -> body
+        else:
+            v_B = R_WB @ v_W
+
+        # convert body convention if needed
+        if output_convention.upper() == "FRD":
+            v_B = np.array([v_B[0], -v_B[1], -v_B[2]])
+
+        return v_B.astype(np.float32)
+
+
 
 
     def _get_initial_offset(self):

@@ -282,6 +282,46 @@ def compute_direction_vector(pos, cam_params):
         raise ValueError(f"Unknown camera model: {cam_params.model}")
 
 
+import numpy as np
+
+def quat_to_euler(qx, qy, qz, qw):
+    """
+    Convert quaternion (qx, qy, qz, qw) to Euler angles (roll, pitch, yaw)
+    following ZYX aerospace convention:
+        roll  about X
+        pitch about Y
+        yaw   about Z
+    Returns angles in radians.
+    """
+
+    # Normalise quaternion to avoid drift
+    norm = np.sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
+    qx, qy, qz, qw = qx/norm, qy/norm, qz/norm, qw/norm
+
+    # Rotation matrix elements
+    # Based on standard SO(3) quaternion formulation
+    R11 = 1 - 2*(qy*qy + qz*qz)
+    R12 = 2*(qx*qy - qz*qw)
+    R13 = 2*(qx*qz + qy*qw)
+    R23 = 2*(qy*qz - qx*qw)
+    R33 = 1 - 2*(qx*qx + qy*qy)
+
+    # === Extract Euler ===
+    # roll (X)
+    roll = np.arctan2(2*(qw*qx + qy*qz), 1 - 2*(qx*qx + qy*qy))
+
+    # pitch (Y)
+    # Clamp input for numerical safety
+    sinp = 2*(qw*qy - qz*qx)
+    sinp = np.clip(sinp, -1.0, 1.0)
+    pitch = np.arcsin(sinp)
+
+    # yaw (Z)
+    yaw = np.arctan2(2*(qw*qz + qx*qy), 1 - 2*(qy*qy + qz*qz))
+
+    return roll, pitch, yaw
+
+
 
 def quat_to_rotmat(qx, qy, qz, qw):
     """
@@ -374,3 +414,33 @@ def compute_attitude_trig(gt_cam_state_slice):
     sinPitch = np.sin(pitch_mean)
 
     return cosRoll, sinRoll, cosPitch, sinPitch
+
+
+def rotmat_to_euler(R):
+    """
+    Convert 3x3 rotation matrix to Euler angles (roll, pitch, yaw)
+    using aerospace ZYX convention:
+       roll  about X
+       pitch about Y
+       yaw   about Z
+
+    Returns (roll, pitch, yaw) in radians.
+    """
+
+    # Safety clip for asin domain errors due to noise
+    sy = -R[2,0]  # sin(pitch)
+
+    if sy <= -1:
+        pitch = np.pi/2
+    elif sy >= 1:
+        pitch = -np.pi/2
+    else:
+        pitch = np.arcsin(sy)
+
+    # roll
+    roll = np.arctan2(R[2,1], R[2,2])
+
+    # yaw
+    yaw  = np.arctan2(R[1,0], R[0,0])
+
+    return roll, pitch, yaw
