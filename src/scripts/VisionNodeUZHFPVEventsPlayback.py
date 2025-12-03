@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 # ============================================================
 
 from testing.utils.load_utils_fpv import fpv_evs_iterator
-from testing.utils.viz_utils import visualize_image
+from testing.utils.viz_utils import visualize_image, visualize_filtered_flow
 
 # strutture dati e parametri
 from src.scripts.defs import (
@@ -39,6 +39,7 @@ from src.scripts.functions import (
     quat_to_euler,
     rotmat_to_quat,
     compute_initial_attitude_offset, 
+    wrap_angle_rad
 )
 
 # ============================================================
@@ -112,11 +113,19 @@ class VisionNodeUZHFPVEventsPlayback:
         self.W = events_cfg.get("W", 346)
         self.rectify = events_cfg.get("rectify", True)
 
+        if "forward" in self.events_dir.lower():
+            self.camParams.inclination = 0.0
+            print(f"Setting camera inclination to {self.camParams.inclination}° for 'forward' dataset.")
+        elif "45" in self.events_dir.lower():
+            self.camParams.inclination = 45.0
+            print(f"Setting camera inclination to {self.camParams.inclination}° for '45' dataset.")
+
+
         if self.rectify: 
             self._updateCameraParameters()
 
         self.initial_altitude_offset = self._get_initial_offset()
-        self.initial_pitch_angle = 0.0
+        print(f"Initial altitude offset from GT: {self.initial_altitude_offset:.3f} m")
 
         self.slicing_type = self.config["SLICING"]["type"]
         self.fixed_dt_ms  = self.config["SLICING"].get("dt_ms", None) if self.slicing_type == "fixed" else None
@@ -141,8 +150,20 @@ class VisionNodeUZHFPVEventsPlayback:
         self._initializeFeatureDetector()
         self._initializeEventDataAdaptive()
 
-        print("Loaded configuration:")
-        print(yaml.dump(self.config, default_flow_style=False))
+        # print("Loaded configuration:")
+        # print(yaml.dump(self.config, default_flow_style=False))
+
+        #load complementary filter quantities
+        # SMOOTHINGFILTER:
+        # enable: true
+        # type: 0   # 0 : COMPLEMENTARY FILTER, 1 : LOW PASS FILTER
+        # lpfK: 0.7  #coefficient for the low pass filter. 0.5 is the default value
+        # complementaryK: 2.3 #coefficient for the complementary filter.
+        smoothing_cfg = self.config.get("SMOOTHINGFILTER", {})
+        self.smoothingFilterType = smoothing_cfg.get("type", 0)
+        self.lpfK = smoothing_cfg.get("lpfK", 0.7)
+        self.complementaryK = smoothing_cfg.get("complementaryK", 2.3)
+
 
     # --------------------------------------------------------
     # YAML & SETUP
@@ -182,7 +203,6 @@ class VisionNodeUZHFPVEventsPlayback:
             self.camParams.cx = cam.get("cx", 173.9835140415677)
             self.camParams.cy = cam.get("cy", 134.63020721240977)
             self.camParams.pixelSize = cam.get("pixelSize", 9e-6)
-            self.camParams.inclination = cam.get("inclination", 45.0)
 
             self.camParams.model = "fisheye"    #since FPV uses wide lens (120°). will change later eventually to "pinhole" if rectify is True
 
@@ -296,20 +316,34 @@ class VisionNodeUZHFPVEventsPlayback:
         # 1. IMU (Gyro) extraction
         self.curr_gyro_cam = self._get_imu(cam_imu_slice)
 
-        print(f"Gyro cam : {self.curr_gyro_cam[0]:.3f}, {self.curr_gyro_cam[1]:.3f}, {self.curr_gyro_cam[2]:.3f} rad/s")
+        print(f"Gyro cam : {math.degrees(self.curr_gyro_cam[0]):.3f}, {math.degrees(self.curr_gyro_cam[1]):.3f}, {math.degrees(self.curr_gyro_cam[2]):.3f} deg/s")
 
         # 2. GT Extraction & Transformation
         # Qui avviene la magia per fixare i sistemi di riferimento.
         # Otteniamo velocità e attitude nel frame FLU (Drone Standard: X-Forward)
         self.curr_velocity_flu, (roll_deg, pitch_deg) = self._get_velocity_and_attitude_FLU(gt_IMU_frame_slice)
         
-        self.current_roll_angle_rad = math.radians(roll_deg)
-        self.current_pitch_angle_rad = math.radians(pitch_deg)
+        raw_roll = math.radians(roll_deg)
+        raw_pitch = math.radians(pitch_deg)
+            
+
+        if self.frameID == 1:
+            # Al primo frame, salviamo "come è girato il mondo rispetto a noi"
+            self.initial_roll_offset = raw_roll
+            self.initial_pitch_offset = raw_pitch
+            print(f"[AHRS] Initializing Attitude. Raw Roll: {roll_deg:.1f}°, Raw Pitch: {pitch_deg:.1f}°")
+            print(f"[AHRS] Applying offset correction. New Roll/Pitch should be ~0.")
+
+            # 3. Applica la correzione (sottrai l'offset e normalizza)
+            # Usa getattr per sicurezza nel caso frameID != 0 ma offset non settato (caso raro)
+        roll_offset = getattr(self, 'initial_roll_offset', 0.0)
+        pitch_offset = getattr(self, 'initial_pitch_offset', 0.0)
+
+        self.current_roll_angle_rad = wrap_angle_rad(raw_roll - roll_offset)
+        self.current_pitch_angle_rad = wrap_angle_rad(raw_pitch - pitch_offset)
 
         print(f"Velocity FLU: {self.curr_velocity_flu[0]:.3f}, {self.curr_velocity_flu[1]:.3f}, {self.curr_velocity_flu[2]:.3f} m/s")
         print(f"Attitude: Roll={roll_deg:.2f} deg, Pitch={pitch_deg:.2f} deg")
-
-        print("")
 
         # 3. Convert Velocity FLU -> Camera Frame
         # L'optical flow stima la depth basandosi sul movimento della CAMERA.
@@ -321,13 +355,10 @@ class VisionNodeUZHFPVEventsPlayback:
         # v_cam_x = -vel_flu[1] # -Vy_flu
         # v_cam_y = -vel_flu[2] # -Vz_flu
         # v_cam_z =  vel_flu[0] # +Vx_flu (Forward)
-        vel_cam = bodyToCam(self.curr_velocity_flu, self.camParams)
         
         # Sovrascriviamo per usarlo nella stima depth
-        self.curr_velocity_cam = np.array([vel_cam[0], vel_cam[1], vel_cam[2]], dtype=np.float32)
-
-        # DEBUG: Stampa per verificare se quando vai dritto vx (FLU) è alta
-        # print(f"Time: {t_us} | V_FLU: [{vel_flu[0]:.2f}, {vel_flu[1]:.2f}, {vel_flu[2]:.2f}] | V_CAM: {self.curr_velocity_cam}")
+        self.curr_velocity_cam = bodyToCam(self.curr_velocity_flu, self.camParams)
+        print(f"Velocity Cam: {self.curr_velocity_cam[0]:.3f}, {self.curr_velocity_cam[1]:.3f}, {self.curr_velocity_cam[2]:.3f} m/s")
 
         # 4. Feature Detection & Flow
         if self.prevFrame is None:
@@ -341,6 +372,7 @@ class VisionNodeUZHFPVEventsPlayback:
         # Visualization
         if self.visualizeImage:
             visualize_image(self.currFrame, self.currPoints, self.prevPoints, self.status)
+            visualize_filtered_flow(self.currFrame, self.filteredFlowVectors)
             cv2.waitKey(self.delayVisualize)
 
         self.prevPoints.clear()
@@ -390,11 +422,11 @@ class VisionNodeUZHFPVEventsPlayback:
 
         # GT Altitude comparison
         if "pz" in gt_IMU_frame_slice:
-            gt_alt = float(np.mean(gt_IMU_frame_slice["pz"])) + self.initial_altitude_offset
+            gt_alt = float(np.mean(gt_IMU_frame_slice["pz"])) - self.initial_altitude_offset
         else:
             gt_alt = 0.0
 
-        # print(f"ALT: Est={self.filteredAltitude:.3f} | GT={gt_alt:.3f}")
+        print(f"ALT: Est={self.filteredAltitude:.3f} | GT={gt_alt:.3f}")
 
 
     # --------------------------------------------------------
@@ -600,12 +632,17 @@ class VisionNodeUZHFPVEventsPlayback:
 
     def _get_initial_offset(self):
         gt_file = os.path.join(self.events_dir, "groundtruth.txt")
-        if not os.path.isfile(gt_file): return 0.0
+        print(f"Looking for GT file at: {gt_file}")
+
+        if not os.path.isfile(gt_file):
+            print("GT file not found.")
+            return 0.0
+
         try:
-            with open(gt_file, 'r') as f:
-                for line in f:
-                    if not line.startswith("#"):
-                        parts = line.split()
-                        return -float(parts[3]) # -pz iniziale
-        except: pass
-        return 0.0
+            data = np.loadtxt(gt_file, comments="#", delimiter=",", skiprows=1)
+            # data shape -> N x 8   (ts, px, py, pz, qx, qy, qz, qw)
+
+            return float(data[0, 3])  # 4th column = pz
+        except Exception as e:
+            print(f"loadtxt failed: {e}")
+            return 0.0

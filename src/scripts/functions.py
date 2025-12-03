@@ -501,3 +501,8 @@ def rotmat_to_quat(R):
     q /= np.linalg.norm(q)
 
     return q[0], q[1], q[2], q[3]
+
+
+def wrap_angle_rad(angle):
+    """ Mantiene l'angolo in radianti tra -pi e +pi """
+    return (angle + np.pi) % (2 * np.pi) - np.pi
