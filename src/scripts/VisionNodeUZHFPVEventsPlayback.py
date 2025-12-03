@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 
 # iterator + util già esistenti (tuoi)
 from testing.utils.load_utils_fpv import fpv_evs_iterator
-from testing.utils.viz_utils import visualize_image, visualize_filtered_flow
+from testing.utils.viz_utils import visualize_image, visualize_image_log
 
 
 # strutture dati e parametri (come nel tuo script a frame)
@@ -40,7 +40,9 @@ from src.scripts.functions import (
     complementaryFilter,
     quat_to_rotmat,
     quat_to_euler,
-    compute_attitude_trig
+    compute_attitude_trig,
+    compute_initial_attitude_offset,
+    
 )
 
 # ============================================================
@@ -113,6 +115,12 @@ class VisionNodeUZHFPVEventsPlayback:
 
         self.initial_altitude_offset = self._get_initial_offset()   #compute the initial altitude over ground
 
+        self.initial_roll_angle = 0.0
+        self.initial_pitch_angle = 0.0
+        self.initial_roll_angle, self.initial_pitch_angle = compute_initial_attitude_offset(self.events_dir)
+
+        #self.pitch angle is the only one which has a large offset, so the roll angle is ok
+        self.initial_pitch_angle = 0.0
 
         self.slicing_type = self.config["SLICING"]["type"]
         self.fixed_dt_ms  = self.config["SLICING"].get("dt_ms", None) if self.slicing_type == "fixed" else None
@@ -350,13 +358,16 @@ class VisionNodeUZHFPVEventsPlayback:
         # 1) Average IMU over time window
         self.curr_gyro_cam = self._get_imu(cam_imu_slice)
 
+        self.curr_position_world = self._get_position_world(gt_state_slice)
+
         # 2) Extract velocity from GT cam state. so velocity is already in camera frame.
         self.curr_velocity_cam = self._gt_velocity_to_cam(gt_state_slice)
         self.curr_velocity_body = self._gt_velocity_and_attitude(gt_state_slice)
 
         # 3) Needed for altitude orientation
-        self.cosRoll, self.sinRoll, self.cosPitch, self.sinPitch = compute_attitude_trig(gt_state_slice)
+        self.current_roll_angle_rad, self.current_pitch_angle_rad = compute_attitude_trig(gt_state_slice, self.initial_roll_angle, self.initial_pitch_angle)
 
+        print(f"[Attitude] t={t_us} us \t \t| roll={math.degrees(self.current_roll_angle_rad):.3f} deg, pitch={math.degrees(self.current_pitch_angle_rad):.3f} deg")
 
         # se è il primissimo frame, inizializza solo i punti
         if self.prevFrame is None:
@@ -380,8 +391,9 @@ class VisionNodeUZHFPVEventsPlayback:
 
         #apply visualization eventually
         if self.visualizeImage:
-            visualize_image(self.currFrame,self.currPoints,self.prevPoints,self.status)
-            visualize_filtered_flow(self.currFrame, self.filteredFlowVectors, win_name="OF_filtered")
+            # visualize_image(self.currFrame,self.currPoints,self.prevPoints,self.status)
+            visualize_image_log(self.currFrame, self)
+            # visualize_filtered_flow(self.currFrame, self.filteredFlowVectors, win_name="OF_filtered")
             cv2.waitKey(self.delayVisualize)
 
 
@@ -449,7 +461,7 @@ class VisionNodeUZHFPVEventsPlayback:
         else:
             gt_alt = float("nan")   # no GT available
 
-        print(f"[Altitude] t={curr_t} us | est={est_alt:.3f} m | gt ={gt_alt:.3f} m")
+        # print(f"[Altitude] t={curr_t} us | est={est_alt:.3f} m | gt ={gt_alt:.3f} m")
 
 
     # --------------------------------------------------------
@@ -603,8 +615,8 @@ class VisionNodeUZHFPVEventsPlayback:
         directionVector_body = camToBody(ofVector.directionVector, self.camParams)
         directionVector_inertial = bodyToInertial(
             directionVector_body,
-            self.cosRoll, self.sinRoll,
-            self.cosPitch, self.sinPitch
+            self.current_roll_angle_rad,
+            self.current_pitch_angle_rad
         )
         cosTheta = directionVector_inertial[2]
         return depth * cosTheta
@@ -705,9 +717,9 @@ class VisionNodeUZHFPVEventsPlayback:
         pitch_deg = np.degrees(pitch)
         yaw_deg   = np.degrees(yaw)
 
-        print(f"[GT] roll = {roll_deg:.2f} deg, pitch = {pitch_deg:.2f} deg, yaw = {yaw_deg:.2f} deg")
-        print(f"[GT] v_W = [{v_W[0]:.3f}, {v_W[1]:.3f}, {v_W[2]:.3f}] m/s")
-        print(f"[GT] v_B = [{v_B[0]:.3f}, {v_B[1]:.3f}, {v_B[2]:.3f}] m/s")
+        # print(f"[GT] roll = {roll_deg:.2f} deg, pitch = {pitch_deg:.2f} deg, yaw = {yaw_deg:.2f} deg")
+        # print(f"[GT] v_W = [{v_W[0]:.3f}, {v_W[1]:.3f}, {v_W[2]:.3f}] m/s")
+        # print(f"[GT] v_B = [{v_B[0]:.3f}, {v_B[1]:.3f}, {v_B[2]:.3f}] m/s")
 
         return v_B.astype(np.float32)
 
@@ -787,3 +799,17 @@ class VisionNodeUZHFPVEventsPlayback:
             initial_offset = -pz
             print(f"[INFO] Initial altitude offset computed: {initial_offset:.3f} m")
             return initial_offset
+    
+    def _get_position_world(self, gt_state_slice):
+        """
+        Extracts the mean position in world frame from the gt_state_slice.
+        """
+        if len(gt_state_slice) == 0:
+            return np.zeros(3, dtype=np.float32)
+
+        px = np.mean(gt_state_slice.get("px", 0.0))
+        py = np.mean(gt_state_slice.get("py", 0.0))
+        pz = np.mean(gt_state_slice.get("pz", 0.0))
+
+        position_world = np.array([px, py, pz], dtype=np.float32)
+        return position_world

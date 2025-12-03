@@ -162,6 +162,37 @@ def bodyToInertial(vectorBody, cosRoll, sinRoll, cosPitch, sinPitch):
     return np.array([ix, iy, iz], dtype=np.float32)
 
 
+def bodyToInertial(vectorBody, roll_angle_rad, pitch_angle_rad):
+    """
+    Made for the UZH-FPV dataset
+    """
+    x_b = vectorBody[0]
+    y_b = vectorBody[1]
+    z_b = vectorBody[2]
+
+    cosPitch = math.cos(pitch_angle_rad)
+    sinPitch = math.sin(pitch_angle_rad)
+    cosRoll  = math.cos(roll_angle_rad)
+    sinRoll  = math.sin(roll_angle_rad)
+    # from your snippet:
+    # inertial[0] = cosPitch*x_b + sinPitch*sinRoll*y_b + sinPitch*cosRoll*z_b
+    # inertial[1] = cosRoll*y_b - sinRoll*z_b
+    # inertial[2] = -sinPitch*x_b + cosPitch*sinRoll*y_b + cosPitch*cosRoll*z_b
+    ix = cosPitch*x_b + sinPitch*sinRoll*y_b + sinPitch*math.cos(math.acos(cosRoll))*z_b
+    # The above is a bit suspect if we do `math.acos(cosRoll)`. 
+    # Let's do a direct approach from the original formula:
+    #   inertial[0] = cosPitch*x_b + sinPitch*sinRoll*y_b + sinPitch*cosRoll*z_b
+    #   inertial[1] = cosRoll*y_b - sinRoll*z_b
+    #   inertial[2] = -sinPitch*x_b + cosPitch*sinRoll*y_b + cosPitch*cosRoll*z_b
+
+    # We'll just do direct if known:
+    ix = cosPitch*x_b + sinPitch*sinRoll*y_b + sinPitch*cosRoll*z_b
+    iy = cosRoll*y_b - sinRoll*z_b
+    iz = -sinPitch*x_b + cosPitch*sinRoll*y_b + cosPitch*cosRoll*z_b
+
+    return np.array([ix, iy, iz], dtype=np.float32)
+
+
 ###############################################################################
 # Smoothing filters: LPFilter, complementaryFilter
 ###############################################################################
@@ -322,67 +353,7 @@ def quat_to_euler(qx, qy, qz, qw):
     return roll, pitch, yaw
 
 
-
-def quat_to_rotmat(qx, qy, qz, qw):
-    """
-    Quaternion (qx,qy,qz,qw) -> rotation matrix R_WC (camera -> world).
-    """
-    # normalizza per sicurezza
-    norm = np.sqrt(qw*qw + qx*qx + qy*qy + qz*qz)
-    qw /= norm
-    qx /= norm
-    qy /= norm
-    qz /= norm
-
-    # convenzione w,x,y,z
-    w, x, y, z = qw, qx, qy, qz
-
-    R = np.array([
-        [1 - 2*(y*y + z*z),     2*(x*y - z*w),         2*(x*z + y*w)],
-        [    2*(x*y + z*w),  1 - 2*(x*x + z*z),        2*(y*z - x*w)],
-        [    2*(x*z - y*w),      2*(y*z + x*w),    1 - 2*(x*x + y*y)]
-    ], dtype=np.float64)
-    return R
-
-
-def quat_to_euler(qx, qy, qz, qw):
-    """
-    quaternion → (roll, pitch, yaw) in radians
-
-    Convention:
-      roll  : rotation around X
-      pitch : rotation around Y
-      yaw   : rotation around Z
-    """
-
-    # normalize quaternion
-    norm = np.sqrt(qw*qw + qx*qx + qy*qy + qz*qz)
-    qw /= norm
-    qx /= norm
-    qy /= norm
-    qz /= norm
-
-    # roll (x-axis)
-    sinr = 2.0 * (qw*qx + qy*qz)
-    cosr = 1.0 - 2.0*(qx*qx + qy*qy)
-    roll = np.arctan2(sinr, cosr)
-
-    # pitch (y-axis)
-    sinp = 2.0*(qw*qy - qz*qx)
-    if abs(sinp) >= 1:
-        pitch = np.pi/2 * np.sign(sinp)    # numerical clamp
-    else:
-        pitch = np.arcsin(sinp)
-
-    # yaw (z-axis)
-    siny = 2.0*(qw*qz + qx*qy)
-    cosy = 1.0 - 2.0*(qy*qy + qz*qz)
-    yaw = np.arctan2(siny, cosy)
-
-    return roll, pitch, yaw
-
-
-def compute_attitude_trig(gt_cam_state_slice):
+def compute_attitude_trig(gt_cam_state_slice, initial_roll_deg=0.0, initial_pitch_deg=0.0):
     """
     Compute cosRoll, sinRoll, cosPitch, sinPitch
     from quaternion orientation in GT cam slice.
@@ -405,42 +376,81 @@ def compute_attitude_trig(gt_cam_state_slice):
         rolls[i] = roll
         pitches[i] = pitch
 
-    roll_mean = np.mean(rolls)
-    pitch_mean = np.mean(pitches)
+    roll_mean = np.mean(rolls) - np.radians(initial_roll_deg)
+    pitch_mean = np.mean(pitches) - np.radians(initial_pitch_deg)
 
-    cosRoll = np.cos(roll_mean)
-    sinRoll = np.sin(roll_mean)
-    cosPitch = np.cos(pitch_mean)
-    sinPitch = np.sin(pitch_mean)
+    return roll_mean, pitch_mean
 
-    return cosRoll, sinRoll, cosPitch, sinPitch
+def quat_to_rotmat(qx, qy, qz, qw):
+    """
+    Quaternion -> rotation matrix (body->world).
+    """
+    x, y, z, w = qx, qy, qz, qw
+    R = np.array([
+        [1-2*(y*y+z*z),   2*(x*y - w*z),   2*(x*z + w*y)],
+        [2*(x*y + w*z),   1-2*(x*x+z*z),   2*(y*z - w*x)],
+        [2*(x*z - w*y),   2*(y*z + w*x),   1-2*(x*x+y*y)]
+    ])
+    return R
 
 
 def rotmat_to_euler(R):
     """
-    Convert 3x3 rotation matrix to Euler angles (roll, pitch, yaw)
-    using aerospace ZYX convention:
-       roll  about X
-       pitch about Y
-       yaw   about Z
-
-    Returns (roll, pitch, yaw) in radians.
+    Rotation matrix -> Euler (roll, pitch, yaw), ZYX convention.
+    Returns radians.
     """
-
-    # Safety clip for asin domain errors due to noise
-    sy = -R[2,0]  # sin(pitch)
-
-    if sy <= -1:
-        pitch = np.pi/2
-    elif sy >= 1:
-        pitch = -np.pi/2
-    else:
-        pitch = np.arcsin(sy)
-
-    # roll
-    roll = np.arctan2(R[2,1], R[2,2])
-
-    # yaw
-    yaw  = np.arctan2(R[1,0], R[0,0])
-
+    sy = -R[2,0]
+    sy = np.clip(sy, -1.0, 1.0)
+    pitch = np.arcsin(sy)
+    roll  = np.arctan2(R[2,1], R[2,2])
+    yaw   = np.arctan2(R[1,0], R[0,0])
     return roll, pitch, yaw
+
+
+def compute_initial_attitude_offset(events_dir, n_samples=10):
+    """
+    1) cerca stamped_groundtruth_us.txt
+    2) legge i primi n_samples
+    3) calcola roll/pitch medi
+    """
+    # ------------- Locate file -------------
+    gt_file = None
+    for f in os.listdir(events_dir):
+        if f.lower().endswith("stamped_groundtruth_us.txt"):
+            gt_file = os.path.join(events_dir, f)
+            break
+
+    if gt_file is None:
+        raise FileNotFoundError(f"Groundtruth file not found under {events_dir}")
+
+    print(f"[INFO] Reading GT file: {gt_file}")
+
+    # ------------- Load GT -------------
+    data = np.loadtxt(gt_file, comments="#")
+
+    # ensure enough samples exist
+    n = min(n_samples, data.shape[0])
+
+    # extract quaternions (order qx,qy,qz,qw)
+    quat = data[:n, 4:8]
+
+    rolls = []
+    pitches = []
+
+    for i in range(n):
+        qx, qy, qz, qw = quat[i]
+        R = quat_to_rotmat(qx, qy, qz, qw)
+        roll, pitch, _ = rotmat_to_euler(R)
+        rolls.append(roll)
+        pitches.append(pitch)
+
+    roll_mean_deg  = np.degrees(np.mean(rolls))
+    pitch_mean_deg = np.degrees(np.mean(pitches))
+
+    print(f"\n===== INITIAL BODY ATTITUDE OFFSET =====")
+    print(f"Samples evaluated: {n}")
+    print(f"Initial roll  ≈ {roll_mean_deg:.2f} deg")
+    print(f"Initial pitch ≈ {pitch_mean_deg:.2f} deg")
+    print("========================================\n")
+
+    return roll_mean_deg, pitch_mean_deg

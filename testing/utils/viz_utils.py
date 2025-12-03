@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 import os
+import math
 
 
 def visualize_image(currFrame, currPoints, prevPoints, status):
@@ -15,6 +16,58 @@ def visualize_image(currFrame, currPoints, prevPoints, status):
             cv2.arrowedLine(flowVis, p1, p2, (0, 0, 255), 2)
     cv2.imshow("OF_raw", flowVis)
     # cv2.waitKey(delay)
+
+
+def visualize_image_log(currFrame, visionNodeUZHFPVEventsPlayback):
+    """
+    Visualizza l'immagine + un pannello laterale con dati dello stato.
+    """
+
+    # Convert grayscale → BGR
+    img = cv2.cvtColor(currFrame, cv2.COLOR_GRAY2BGR)
+    h, w = img.shape[:2]
+
+    # ---- CREATE RIGHT-SIDE STATUS PANEL ----
+    panel_width = 280   # spazio laterale
+    panel = np.zeros((h, panel_width, 3), dtype=np.uint8)
+
+    # Color & formatting
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.45
+    color = (0, 255, 255)
+    line_height = 18
+    x_text = 5
+    y_text = 20
+
+    # Extract values from node
+    # self.curr_gyro_cam
+    # self.curr_velocity_cam
+    # self.current_roll_angle_rad
+    # self.current_pitch_angle_rad
+    vx, vy, vz = visionNodeUZHFPVEventsPlayback.curr_velocity_cam   # body frame velocity
+    gx, gy, gz = visionNodeUZHFPVEventsPlayback.curr_gyro_cam       # body gyro
+    px, py, pz = visionNodeUZHFPVEventsPlayback.curr_position_world        # world pos
+    roll_deg = math.degrees(visionNodeUZHFPVEventsPlayback.current_roll_angle_rad)         # degrees
+    pitch_deg = math.degrees(visionNodeUZHFPVEventsPlayback.current_pitch_angle_rad)       # degrees
+    texts = [
+        "=== DRONE STATE ===",
+        f"v_B = [{vx:.2f}, {vy:.2f}, {vz:.2f}] m/s",
+        f"gyro = [{gx:.2f}, {gy:.2f}, {gz:.2f}] deg/s",
+        f"pos_W = [{px:.2f}, {py:.2f}, {pz:.2f}] m",
+        f"pitch = {roll_deg:.2f} deg",
+        f"roll = {pitch_deg:.2f} deg"
+    ]
+
+    for t in texts:
+        cv2.putText(panel, t, (x_text, y_text), font, font_scale, color, 1, cv2.LINE_AA)
+        y_text += line_height
+
+    # ---- CONCAT IMAGE + PANEL ----
+    vis = np.hstack((img, panel))
+
+    # Show the final visualization
+    cv2.imshow("Image", vis)
+
 
 def visualize_filtered_flow(currFrame, filtered_vectors, win_name="OF_filtered"):
     """
