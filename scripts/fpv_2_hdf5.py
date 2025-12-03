@@ -117,6 +117,12 @@ def find_required_files(input_dir: Path):
     """
     Ensure that the required FPV files exist in the input_dir.
     """
+
+    if "outdoor" in input_dir.name.lower():
+        logger.info("Detected OUTDOOR scene from folder name.")
+        logger.info("Only groundtruth_us.txt will be used for GT.")
+
+        
     events_txt = input_dir / "events.txt"
     imu_txt = input_dir / "imu.txt"
     gt_txt = input_dir / "stamped_groundtruth_us.txt"

@@ -213,28 +213,74 @@ def compute_a_vector_pixel(pos, cam_params):
     return np.array([x, y, z], dtype=float)
 
 def compute_a_vector_meter(pos, cam_params):
-    """
-    Equivalent to:
-      cv::Vec3f computeAVectorMeter(const cv::Point2f &pos, const CAMParameters/FrameParams&)
-    Returns a 3D vector in "meter coordinates."
-    """
-    x = (pos[0] - cam_params.cx) * cam_params.pixelSize
-    y = (pos[1] - cam_params.cy) * cam_params.pixelSize
-    z = cam_params.fx * cam_params.pixelSize
-    return np.array([x, y, z], dtype=float)
+    """takes into consideration camera model (pinhole or fisheye)"""
+    u, v = pos
+
+    if cam_params.model.lower() == "pinhole":
+        # keep pinhole projection
+        x = (u - cam_params.cx) * cam_params.pixelSize
+        y = (v - cam_params.cy) * cam_params.pixelSize
+        z = cam_params.fx * cam_params.pixelSize
+        return np.array([x, y, z], dtype=np.float32)
+
+    elif cam_params.model.lower() == "fisheye":
+        # Return meter-scaled fisheye ray
+        # Using the same mapping as direction vector ensures consistent geometry
+        x = (u - cam_params.cx) / cam_params.fx
+        y = (v - cam_params.cy) / cam_params.fy
+
+        r = math.sqrt(x*x + y*y)
+        if r < 1e-9:
+            return np.array([0.0, 0.0, 1.0], dtype=np.float32)
+
+        theta = r
+        sin_theta = math.sin(theta)
+        cos_theta = math.cos(theta)
+
+        return np.array([
+            (x/r)*sin_theta,
+            (y/r)*sin_theta,
+            cos_theta
+        ], dtype=np.float32)
+
+    else:
+        raise ValueError(f"Unknown camera model: {cam_params.model}")
+
 
 def compute_direction_vector(pos, cam_params):
     """
-    Equivalent to:
-      cv::Vec3f computeDirectionVector(const cv::Point2f &pos, const CAMParameters/FrameParams&)
-    Returns the unit direction vector (in meter coordinates) from the camera center through 'pos'.
+    Returns bearing ray for pinhole OR fisheye (equidistant) model.
     """
-    a = compute_a_vector_meter(pos, cam_params)
-    norm_a = np.linalg.norm(a)
-    if norm_a == 0:
-        # Degenerate case - no meaningful direction if the vector is zero-length
-        return np.array([0.0, 0.0, 0.0], dtype=float)
-    return a / norm_a
+    u, v = pos
+
+    if cam_params.model.lower() == "pinhole":
+        # --- Existing behavior (keep as-is) ---
+        a = compute_a_vector_meter(pos, cam_params)  # pinhole version
+        norm_a = np.linalg.norm(a)
+        return a / norm_a if norm_a > 1e-9 else np.array([0.0, 0.0, 0.0], dtype=np.float32)
+
+    elif cam_params.model.lower() == "fisheye":
+        # --- Equidistant fisheye model ---
+        x = (u - cam_params.cx) / cam_params.fx
+        y = (v - cam_params.cy) / cam_params.fy
+
+        r = math.sqrt(x*x + y*y)
+        if r < 1e-9:
+            return np.array([0.0, 0.0, 1.0], dtype=np.float32)
+
+        theta = r
+        sin_theta = math.sin(theta)
+        cos_theta = math.cos(theta)
+
+        return np.array([
+            (x/r) * sin_theta,
+            (y/r) * sin_theta,
+            cos_theta
+        ], dtype=np.float32)
+
+    else:
+        raise ValueError(f"Unknown camera model: {cam_params.model}")
+
 
 
 def quat_to_rotmat(qx, qy, qz, qw):

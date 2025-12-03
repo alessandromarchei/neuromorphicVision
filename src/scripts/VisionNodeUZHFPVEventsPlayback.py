@@ -106,9 +106,14 @@ class VisionNodeUZHFPVEventsPlayback:
         events_cfg = self.config["EVENTS"]
         self.events_dir = events_cfg["scene"]
         self.side = events_cfg.get("side", "left")
-        self.H = events_cfg.get("H", 640)
-        self.W = events_cfg.get("W", 480)
-        self.rectify = events_cfg.get("rectify", True)
+        self.H = events_cfg.get("H", 260)
+        self.W = events_cfg.get("W", 346)
+        self.rectify = events_cfg.get("rectify", True)      #if rectify, apply pinhole model, otherwise fisheye
+
+        if self.rectify: 
+            self._updateCameraParameters()
+
+        self.initial_altitude_offset = self._get_initial_offset()   #compute the initial altitude over ground
 
 
         self.slicing_type = self.config["SLICING"]["type"]
@@ -186,6 +191,8 @@ class VisionNodeUZHFPVEventsPlayback:
             self.camParams.pixelSize = cam.get("pixelSize", 9e-6)
             self.camParams.inclination = cam.get("inclination", 45.0)
 
+            self.camParams.model = "fisheye"    #since FPV uses wide lens (120°). will change later eventually to "pinhole" if rectify is True
+
         # LK
         if "LK" in self.config:
             lk_conf = self.config["LK"]
@@ -215,6 +222,30 @@ class VisionNodeUZHFPVEventsPlayback:
         if "delayVisualize" in self.config:
             self.delayVisualize = int(self.config["delayVisualize"])
 
+    def _updateCameraParameters(self):
+        #udpate instrinsics parameters if the rectification is performed
+        #check if the rectification flag is on. if so, we will rectify the image
+        #so the true calibration parameters are the rectified ones, found at : path/calib_undist.txt
+        if self.rectify:
+            calib_path = os.path.join(self.events_dir, "calib_undist.txt")
+            if os.path.isfile(calib_path):
+                with open(calib_path, 'r') as f:
+                    line = f.readline().strip()
+                    params = line.split()
+                    assert len(params) >= 4, "calib_undist.txt badly formatted"
+                    self.camParams.fx = float(params[0])
+                    self.camParams.fy = float(params[1])
+                    self.camParams.cx = float(params[2])
+                    self.camParams.cy = float(params[3])
+
+                    self.camParams.model = "pinhole"  # set model to pinhole if rectified
+
+                print(f"[VisionNodeUZHFPVEventsPlayback] Using RECTIFIED intrinsics:"
+                    f" fx={self.camParams.fx:.3f}, fy={self.camParams.fy:.3f}, "
+                    f"cx={self.camParams.cx:.3f}, cy={self.camParams.cy:.3f}")
+            else:
+                print(f"[WARNING] Rectification enabled but calib_undist.txt NOT FOUND at {calib_path}")
+
     # --------------------------------------------------------
     # Feature detector
     # --------------------------------------------------------
@@ -237,7 +268,7 @@ class VisionNodeUZHFPVEventsPlayback:
             self.ts_us = None
             return
 
-        print("[VisionNodeEventsPlayback] Preloading events for adaptive slicing.")
+        print("[VisionNodeUZHFPVEventsPlayback] Preloading events for adaptive slicing.")
 
         # HDF5 events
         h5in = glob.glob(os.path.join(self.events_dir, f"*_data.hdf5"))
@@ -281,7 +312,8 @@ class VisionNodeUZHFPVEventsPlayback:
             W=self.W,
             adaptive_slicer_pid=self.adaptiveSlicer,
             slicing_type=self.slicing_type,
-            use_valid_frame_range=self.use_valid_frame_range
+            use_valid_frame_range=self.use_valid_frame_range,
+            rectify=self.rectify
         )
 
         for slice_data in iterator:
@@ -321,6 +353,8 @@ class VisionNodeUZHFPVEventsPlayback:
         # 1) Average IMU over time window
         self.curr_gyro_cam = self._get_imu(cam_imu_slice)
 
+        print(f"[IMU] t={t_us} us | gyro_cam = [{self.curr_gyro_cam[0]:.3f}, {self.curr_gyro_cam[1]:.3f}, {self.curr_gyro_cam[2]:.3f}] rad/s")
+
         # 2) Extract velocity from GT cam state. so velocity is already in camera frame.
         self.curr_velocity_cam = self._gt_velocity_to_cam(gt_cam_state_slice)
 
@@ -340,7 +374,7 @@ class VisionNodeUZHFPVEventsPlayback:
         #apply visualization eventually
         if self.visualizeImage:
             visualize_image(self.currFrame,self.currPoints,self.prevPoints,self.status)
-            # visualize_filtered_flow(self.currFrame, self.filteredFlowVectors, win_name="OF_filtered")
+            visualize_filtered_flow(self.currFrame, self.filteredFlowVectors, win_name="OF_filtered")
             cv2.waitKey(self.delayVisualize)
 
 
@@ -636,3 +670,31 @@ class VisionNodeUZHFPVEventsPlayback:
         # velocità media nello slice (in camera frame)
         v_cam_mean = v_C.mean(axis=0).astype(np.float32)
         return v_cam_mean
+
+
+    def _get_initial_offset(self):
+        """
+        GT pose and altitude "pz" is relative to inertial frame. their 0 altitude is not applied to the exact ground level.
+        So read the stamped_gt_cam_us.txt inside the events_dir to get the initial offset.
+        """
+
+        #read first line of stamped_gt_cam_us.txt
+        gt_file = os.path.join(self.events_dir, "stamped_groundtruth_us_cam.txt")
+        if not os.path.isfile(gt_file):
+            print(f"[WARNING] GT file not found: {gt_file}")
+            print("[WARNING] Cannot compute initial altitude offset. Using 0.0 m.")
+            return 0.0
+        
+        with open(gt_file, 'r') as f:
+            first_line = f.readline().strip()
+            parts = first_line.split()
+            if len(parts) < 5:
+                print(f"[WARNING] GT file badly formatted: {gt_file}")
+                print("[WARNING] Cannot compute initial altitude offset. Using 0.0 m.")
+                return 0.0
+            #first line is : 22833964.000000 -3.736644 4.424751 -1.010792 0.911352 -0.166714 0.074742 -0.368861
+            #where columns are: timestamp [us], px, py, pz, qx, qy, qz, qw
+            pz = float(parts[3])  # assuming pz is the 4th column
+            initial_offset = -pz
+            print(f"[INFO] Initial altitude offset computed: {initial_offset:.3f} m")
+            return initial_offset

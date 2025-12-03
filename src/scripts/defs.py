@@ -108,6 +108,7 @@ class CameraParams:
         self.pixelSize = 1.0e-5
         self.inclination = 45.0
         self.exposureTime = 20000.0  # microseconds
+        self.model = "pinhole" # or "fisheye", in case not rectified
 
 class LKParams:
     def __init__(self):
