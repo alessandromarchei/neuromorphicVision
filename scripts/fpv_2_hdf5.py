@@ -14,13 +14,9 @@ Convert a folder with:
         # or possibly (no index):
         # timestamp(s) ang_vel_x ang_vel_y ang_vel_z lin_acc_x lin_acc_y lin_acc_z
 
-    stamped_groundtruth_us.txt
+    groundtruth.txt
         # #timestamp[us] px py pz qx qy qz qw
         # 2.342751200000000000e+07 -4.9012... 4.3717... -9.5029... -8.2272... 4.2370... -1.7456... 3.3633...
-
-    stamped_groundtruth_us_cam.txt
-        # #timestamp[us] px py pz qx qy qz qw
-        # 23427512.000000 -4.890653 4.380619 -0.967982 0.821750 -0.426547 0.176750 -0.333981
 
     t_offset_us.txt
         # single value, e.g. 1.545313677528878000e+15
@@ -30,7 +26,6 @@ into a MVSEC-like HDF5 file with groups:
     /cam/events/{x,y,t,p}
     /cam/imu/{timestamp,ax,ay,az,gx,gy,gz}
     /gt/state/{timestamp,px,py,pz,qx,qy,qz,qw}
-    /gt_cam/state/{timestamp,px,py,pz,qx,qy,qz,qw}
 
 where:
   - event timestamps t are in microseconds relative to the offset:
@@ -125,12 +120,11 @@ def find_required_files(input_dir: Path):
         
     events_txt = input_dir / "events.txt"
     imu_txt = input_dir / "imu.txt"
-    gt_txt = input_dir / "stamped_groundtruth_us.txt"
-    gt_cam_txt = input_dir / "stamped_groundtruth_us_cam.txt"
+    gt_txt = input_dir / "groundtruth.txt"
     offset_txt = input_dir / "t_offset_us.txt"
 
     missing = []
-    for f in [events_txt, imu_txt, gt_txt, gt_cam_txt, offset_txt]:
+    for f in [events_txt, imu_txt, gt_txt, offset_txt]:
         if not f.is_file():
             missing.append(str(f))
 
@@ -139,7 +133,7 @@ def find_required_files(input_dir: Path):
             "Missing required files:\n" + "\n".join(f" - {m}" for m in missing)
         )
 
-    return events_txt, imu_txt, gt_txt, gt_cam_txt, offset_txt
+    return events_txt, imu_txt, gt_txt, offset_txt
 
 
 def read_offset_us(offset_path: Path) -> int:
@@ -524,26 +518,6 @@ def write_gt(h5file: h5py.File, gt_path: Path):
     g_state.create_dataset("qz", data=qz, compression="gzip", compression_opts=4, shuffle=True)
     g_state.create_dataset("qw", data=qw, compression="gzip", compression_opts=4, shuffle=True)
 
-
-def write_gt_cam(h5file: h5py.File, gt_cam_path: Path):
-    """
-    Write camera ground truth into /gt_cam/state/{timestamp,px,py,pz,qx,qy,qz,qw}
-    """
-    g_gtc = h5file.create_group("gt_cam")
-    g_state = g_gtc.create_group("state")
-
-    t, px, py, pz, qx, qy, qz, qw = _load_gt_file(gt_cam_path)
-
-    g_state.create_dataset("timestamp", data=t, compression="gzip", compression_opts=4, shuffle=True)
-    g_state.create_dataset("px", data=px, compression="gzip", compression_opts=4, shuffle=True)
-    g_state.create_dataset("py", data=py, compression="gzip", compression_opts=4, shuffle=True)
-    g_state.create_dataset("pz", data=pz, compression="gzip", compression_opts=4, shuffle=True)
-    g_state.create_dataset("qx", data=qx, compression="gzip", compression_opts=4, shuffle=True)
-    g_state.create_dataset("qy", data=qy, compression="gzip", compression_opts=4, shuffle=True)
-    g_state.create_dataset("qz", data=qz, compression="gzip", compression_opts=4, shuffle=True)
-    g_state.create_dataset("qw", data=qw, compression="gzip", compression_opts=4, shuffle=True)
-
-
 # ---------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------
@@ -570,7 +544,7 @@ def main():
     if not input_dir.is_dir():
         raise NotADirectoryError(f"Input dir does not exist: {input_dir}")
 
-    events_txt, imu_txt, gt_txt, gt_cam_txt, offset_txt = find_required_files(input_dir)
+    events_txt, imu_txt, gt_txt, offset_txt = find_required_files(input_dir)
     t_offset_us = read_offset_us(offset_txt)
 
     # Derive scene name from folder if output not given
@@ -585,7 +559,6 @@ def main():
     logger.info(f" Events file     : {events_txt.name}")
     logger.info(f" IMU file        : {imu_txt.name}")
     logger.info(f" GT file         : {gt_txt.name}")
-    logger.info(f" GT Cam file     : {gt_cam_txt.name}")
     logger.info(f" Offset file     : {offset_txt.name}")
     logger.info(f" Output HDF5     : {out_path}")
     logger.info("============================================")
@@ -595,7 +568,6 @@ def main():
         write_cam_events(h5f, events_txt, t_offset_us)
         write_imu(h5f, imu_txt, t_offset_us)
         write_gt(h5f, gt_txt)
-        write_gt_cam(h5f, gt_cam_txt)
 
     logger.info("============================================")
     logger.info(" Conversion completed successfully.")

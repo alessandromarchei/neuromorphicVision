@@ -315,42 +315,43 @@ def compute_direction_vector(pos, cam_params):
 
 import numpy as np
 
-def quat_to_euler(qx, qy, qz, qw):
+def quat_to_euler(qx, qy, qz, qw, order="ZYX"):
     """
-    Convert quaternion (qx, qy, qz, qw) to Euler angles (roll, pitch, yaw)
-    following ZYX aerospace convention:
-        roll  about X
-        pitch about Y
-        yaw   about Z
-    Returns angles in radians.
+    Convert quaternion (qx, qy, qz, qw) to Euler angles in radians.
+
+    Default order="ZYX" = yaw(Z) -> pitch(Y) -> roll(X)
+    which is the standard aerospace/world convention.
+
+    Returns (roll, pitch, yaw).
     """
 
-    # Normalise quaternion to avoid drift
+    # Normalise quaternion
     norm = np.sqrt(qx*qx + qy*qy + qz*qz + qw*qw)
     qx, qy, qz, qw = qx/norm, qy/norm, qz/norm, qw/norm
 
-    # Rotation matrix elements
-    # Based on standard SO(3) quaternion formulation
-    R11 = 1 - 2*(qy*qy + qz*qz)
-    R12 = 2*(qx*qy - qz*qw)
-    R13 = 2*(qx*qz + qy*qw)
-    R23 = 2*(qy*qz - qx*qw)
-    R33 = 1 - 2*(qx*qx + qy*qy)
+    if order.upper() == "ZYX":
+        # --- yaw (Z) ---
+        yaw = np.arctan2(
+            2*(qw*qz + qx*qy),
+            1 - 2*(qy*qy + qz*qz)
+        )
 
-    # === Extract Euler ===
-    # roll (X)
-    roll = np.arctan2(2*(qw*qx + qy*qz), 1 - 2*(qx*qx + qy*qy))
+        # --- pitch (Y) ---
+        s = 2*(qw*qy - qz*qx)
+        s = np.clip(s, -1.0, 1.0)
+        pitch = np.arcsin(s)
 
-    # pitch (Y)
-    # Clamp input for numerical safety
-    sinp = 2*(qw*qy - qz*qx)
-    sinp = np.clip(sinp, -1.0, 1.0)
-    pitch = np.arcsin(sinp)
+        # --- roll (X) ---
+        roll = np.arctan2(
+            2*(qw*qx + qy*qz),
+            1 - 2*(qx*qx + qy*qy)
+        )
 
-    # yaw (Z)
-    yaw = np.arctan2(2*(qw*qz + qx*qy), 1 - 2*(qy*qy + qz*qz))
+        return roll, pitch, yaw
 
-    return roll, pitch, yaw
+    else:
+        raise NotImplementedError(f"Euler order '{order}' not supported yet.")
+
 
 
 def compute_attitude_trig(gt_cam_state_slice, initial_roll_deg=0.0, initial_pitch_deg=0.0):
@@ -409,14 +410,14 @@ def rotmat_to_euler(R):
 
 def compute_initial_attitude_offset(events_dir, n_samples=10):
     """
-    1) cerca stamped_groundtruth_us.txt
+    1) cerca groundtruth.txt
     2) legge i primi n_samples
     3) calcola roll/pitch medi
     """
     # ------------- Locate file -------------
     gt_file = None
     for f in os.listdir(events_dir):
-        if f.lower().endswith("stamped_groundtruth_us.txt"):
+        if f.lower().endswith("groundtruth.txt"):
             gt_file = os.path.join(events_dir, f)
             break
 
@@ -454,3 +455,49 @@ def compute_initial_attitude_offset(events_dir, n_samples=10):
     print("========================================\n")
 
     return roll_mean_deg, pitch_mean_deg
+
+
+
+def rotmat_to_quat(R):
+    """
+    Convert a 3x3 rotation matrix into a quaternion (qx, qy, qz, qw).
+    Quaternion follows convention: q = [qx, qy, qz, qw]
+    """
+
+    # Ensure input is array
+    R = np.asarray(R, dtype=float)
+    
+    trace = R[0,0] + R[1,1] + R[2,2]
+
+    if trace > 0:
+        s = 0.5 / np.sqrt(trace + 1.0)
+        qw = 0.25 / s
+        qx = (R[2,1] - R[1,2]) * s
+        qy = (R[0,2] - R[2,0]) * s
+        qz = (R[1,0] - R[0,1]) * s
+    else:
+        # Find largest diagonal element
+        if (R[0,0] > R[1,1]) and (R[0,0] > R[2,2]):
+            s = 2.0 * np.sqrt(1.0 + R[0,0] - R[1,1] - R[2,2])
+            qw = (R[2,1] - R[1,2]) / s
+            qx = 0.25 * s
+            qy = (R[0,1] + R[1,0]) / s
+            qz = (R[0,2] + R[2,0]) / s
+        elif R[1,1] > R[2,2]:
+            s = 2.0 * np.sqrt(1.0 + R[1,1] - R[0,0] - R[2,2])
+            qw = (R[0,2] - R[2,0]) / s
+            qx = (R[0,1] + R[1,0]) / s
+            qy = 0.25 * s
+            qz = (R[1,2] + R[2,1]) / s
+        else:
+            s = 2.0 * np.sqrt(1.0 + R[2,2] - R[0,0] - R[1,1])
+            qw = (R[1,0] - R[0,1]) / s
+            qx = (R[0,2] + R[2,0]) / s
+            qy = (R[1,2] + R[2,1]) / s
+            qz = 0.25 * s
+
+    # Normalize quaternion
+    q = np.array([qx, qy, qz, qw])
+    q /= np.linalg.norm(q)
+
+    return q[0], q[1], q[2], q[3]

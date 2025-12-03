@@ -40,6 +40,7 @@ from src.scripts.functions import (
     complementaryFilter,
     quat_to_rotmat,
     quat_to_euler,
+    rotmat_to_quat,
     compute_attitude_trig,
     compute_initial_attitude_offset,
     
@@ -117,7 +118,7 @@ class VisionNodeUZHFPVEventsPlayback:
 
         self.initial_roll_angle = 0.0
         self.initial_pitch_angle = 0.0
-        self.initial_roll_angle, self.initial_pitch_angle = compute_initial_attitude_offset(self.events_dir)
+        # self.initial_roll_angle, self.initial_pitch_angle = compute_initial_attitude_offset(self.events_dir)
 
         #self.pitch angle is the only one which has a large offset, so the roll angle is ok
         self.initial_pitch_angle = 0.0
@@ -343,7 +344,7 @@ class VisionNodeUZHFPVEventsPlayback:
     # --------------------------------------------------------
     # Processa UN event frame (come processFrames(), ma senza altitude)
     # --------------------------------------------------------
-    def _processEventFrame(self, event_frame, t_us, cam_imu_slice, gt_cam_state_slice, gt_state_slice=None):
+    def _processEventFrame(self, event_frame, t_us, cam_imu_slice, gt_CAM_frame_slice, gt_IMU_frame_slice=None):
         """
         Per ora: optical flow + feature detection, esattamente come nel caso frames.
         (La GT è già in self.current_gt_flow se disponibile.)
@@ -358,16 +359,20 @@ class VisionNodeUZHFPVEventsPlayback:
         # 1) Average IMU over time window
         self.curr_gyro_cam = self._get_imu(cam_imu_slice)
 
-        self.curr_position_world = self._get_position_world(gt_state_slice)
+        self.curr_position_world = self._get_position_world(gt_IMU_frame_slice)
 
         # 2) Extract velocity from GT cam state. so velocity is already in camera frame.
-        self.curr_velocity_cam = self._gt_velocity_to_cam(gt_state_slice)
-        self.curr_velocity_body = self._gt_velocity_and_attitude(gt_state_slice)
+        self.curr_velocity_cam = self._gt_velocity_to_cam(gt_IMU_frame_slice)
+        vel_body_flu, (roll_body_deg, pitch_body_deg) = self._get_velocity_and_attitude_FLU(gt_IMU_frame_slice)
 
         # 3) Needed for altitude orientation
-        self.current_roll_angle_rad, self.current_pitch_angle_rad = compute_attitude_trig(gt_state_slice, self.initial_roll_angle, self.initial_pitch_angle)
+        # self.current_roll_angle_rad, self.current_pitch_angle_rad = compute_attitude_trig(gt_IMU_frame_slice, self.initial_roll_angle, self.initial_pitch_angle)
 
-        print(f"[Attitude] t={t_us} us \t \t| roll={math.degrees(self.current_roll_angle_rad):.3f} deg, pitch={math.degrees(self.current_pitch_angle_rad):.3f} deg")
+        # print(f"[Attitude] t={t_us} us \t \t| roll={math.degrees(self.current_roll_angle_rad):.3f} deg, 
+        self.current_roll_angle_rad = math.radians(roll_body_deg)
+        self.current_pitch_angle_rad = math.radians(pitch_body_deg)
+        print(f" vel FLU = [{vel_body_flu[0]:.3f}, {vel_body_flu[1]:.3f}, {vel_body_flu[2]:.3f}] m/s")
+        print(f" roll={roll_body_deg:.3f} deg, pitch={pitch_body_deg:.3f} deg")
 
         # se è il primissimo frame, inizializza solo i punti
         if self.prevFrame is None:
@@ -385,14 +390,14 @@ class VisionNodeUZHFPVEventsPlayback:
         # print(f"[IMU] t={t_us} us \t \t \t| gyro_cam = \t[{gyro_deg[0]:.3f}, {gyro_deg[1]:.3f}, {gyro_deg[2]:.3f}] deg/s")
         # print(f"[GT CAM VELOCITY] t={t_us} us \t \t| vel_cam = [{self.curr_velocity_cam[0]:.3f}, {self.curr_velocity_cam[1]:.3f}, {self.curr_velocity_cam[2]:.3f}] m/s")
         # print(f"[GT BODY VELOCITY] t={t_us} us \t \t| vel_body = [{self.curr_velocity_body[0]:.3f}, {self.curr_velocity_body[1]:.3f}, {self.curr_velocity_body[2]:.3f}] m/s")
-        # print(f"[GT Cam Position] t={t_us} us \t| pos_cam = \t[{np.mean(gt_cam_state_slice.get('px', 0.0)):.3f}, {np.mean(gt_cam_state_slice.get('py', 0.0)):.3f}, {np.mean(gt_cam_state_slice.get('pz', 0.0)):.3f}] m")
+        # print(f"[GT Cam Position] t={t_us} us \t| pos_cam = \t[{np.mean(gt_CAM_frame_slice.get('px', 0.0)):.3f}, {np.mean(gt_CAM_frame_slice.get('py', 0.0)):.3f}, {np.mean(gt_CAM_frame_slice.get('pz', 0.0)):.3f}] m")
         # print(f"[Attitude] t={t_us} us \t \t| roll={math.degrees(math.acos(self.cosRoll)):.3f} deg, pitch={math.degrees(math.acos(self.cosPitch)):.3f} deg")
 
 
         #apply visualization eventually
         if self.visualizeImage:
-            # visualize_image(self.currFrame,self.currPoints,self.prevPoints,self.status)
-            visualize_image_log(self.currFrame, self)
+            visualize_image(self.currFrame,self.currPoints,self.prevPoints,self.status)
+            # visualize_image_log(self.currFrame, self)
             # visualize_filtered_flow(self.currFrame, self.filteredFlowVectors, win_name="OF_filtered")
             cv2.waitKey(self.delayVisualize)
 
@@ -456,8 +461,8 @@ class VisionNodeUZHFPVEventsPlayback:
         est_alt = float(self.filteredAltitude)
 
         # 3) GT altitude from GT state, using "pz". it points upwards. the z value is set around 1 meters above ground, so sum up 1.0 m
-        if "pz" in gt_cam_state_slice:
-            gt_alt = float(np.mean(gt_cam_state_slice["pz"])) + self.initial_altitude_offset
+        if "pz" in gt_CAM_frame_slice:
+            gt_alt = float(np.mean(gt_CAM_frame_slice["pz"])) + self.initial_altitude_offset
         else:
             gt_alt = float("nan")   # no GT available
 
@@ -622,9 +627,9 @@ class VisionNodeUZHFPVEventsPlayback:
         return depth * cosTheta
 
 
-    def _gt_velocity_to_cam(self, gt_cam_state_slice):
+    def _gt_velocity_to_cam(self, gt_CAM_frame_slice):
         """
-        gt_cam_state_slice:
+        gt_CAM_frame_slice:
             dict-like with arrays:
             - 'timestamp' [us]
             - 'px','py','pz'  (posizione camera nel mondo)
@@ -632,17 +637,17 @@ class VisionNodeUZHFPVEventsPlayback:
         Ritorna velocità media [vx, vy, vz] nel frame camera.
         """
         # nessun dato
-        if len(gt_cam_state_slice) == 0:
+        if len(gt_CAM_frame_slice) == 0:
             return np.zeros(3, dtype=np.float32)
 
-        t_us = np.asarray(gt_cam_state_slice["timestamp"], dtype=np.int64)
-        px = np.asarray(gt_cam_state_slice["px"], dtype=np.float64)
-        py = np.asarray(gt_cam_state_slice["py"], dtype=np.float64)
-        pz = np.asarray(gt_cam_state_slice["pz"], dtype=np.float64)
-        qx = np.asarray(gt_cam_state_slice["qx"], dtype=np.float64)
-        qy = np.asarray(gt_cam_state_slice["qy"], dtype=np.float64)
-        qz = np.asarray(gt_cam_state_slice["qz"], dtype=np.float64)
-        qw = np.asarray(gt_cam_state_slice["qw"], dtype=np.float64)
+        t_us = np.asarray(gt_CAM_frame_slice["timestamp"], dtype=np.int64)
+        px = np.asarray(gt_CAM_frame_slice["px"], dtype=np.float64)
+        py = np.asarray(gt_CAM_frame_slice["py"], dtype=np.float64)
+        pz = np.asarray(gt_CAM_frame_slice["pz"], dtype=np.float64)
+        qx = np.asarray(gt_CAM_frame_slice["qx"], dtype=np.float64)
+        qy = np.asarray(gt_CAM_frame_slice["qy"], dtype=np.float64)
+        qz = np.asarray(gt_CAM_frame_slice["qz"], dtype=np.float64)
+        qw = np.asarray(gt_CAM_frame_slice["qw"], dtype=np.float64)
 
         N = t_us.shape[0]
         if N < 2:
@@ -675,67 +680,70 @@ class VisionNodeUZHFPVEventsPlayback:
         return v_cam_mean
     
 
-    def _gt_velocity_and_attitude(self,
-                              gt_state_slice,
-                              quat_is_body_to_world=True):
+    def _get_velocity_and_attitude_FLU(self, gt_IMU_frame_slice):
 
-        if len(gt_state_slice) < 2:
-            return np.zeros(3, dtype=np.float32)
+        if len(gt_IMU_frame_slice) < 2:
+            return np.zeros(3, dtype=np.float32), (0,0)
 
-        # === extract arrays ===
-        t_us = np.asarray(gt_state_slice["timestamp"], dtype=np.int64)
-        pos = np.vstack([gt_state_slice["px"],
-                        gt_state_slice["py"],
-                        gt_state_slice["pz"]]).T
+        # ===== timestamps & positions =====
+        t_us = np.asarray(gt_IMU_frame_slice["timestamp"], dtype=np.int64)
+        pos  = np.vstack([gt_IMU_frame_slice["px"], gt_IMU_frame_slice["py"], gt_IMU_frame_slice["pz"]]).T
 
         dt = (t_us[-1] - t_us[0]) * 1e-6
         if dt <= 0:
-            return np.zeros(3, dtype=np.float32)
+            return np.zeros(3, dtype=np.float32), (0,0)
 
-        # === world velocity ===
+        # ===== world velocity =====
         dp_W = pos[-1] - pos[0]
         v_W  = dp_W / dt
 
-        # === orientation at midpoint ===
-        mid_idx = len(t_us) // 2
-        qx = gt_state_slice["qx"][mid_idx]
-        qy = gt_state_slice["qy"][mid_idx]
-        qz = gt_state_slice["qz"][mid_idx]
-        qw = gt_state_slice["qw"][mid_idx]
+        # ===== get quaternion at midpoint =====
+        mid = len(t_us)//2
+        qx = gt_IMU_frame_slice["qx"][mid]
+        qy = gt_IMU_frame_slice["qy"][mid]
+        qz = gt_IMU_frame_slice["qz"][mid]
+        qw = gt_IMU_frame_slice["qw"][mid]
 
-        R_WB = quat_to_rotmat(qx, qy, qz, qw)
+        # NOTE dataset gives R_W→I
+        R_WI = quat_to_rotmat(qx, qy, qz, qw)
 
-        # convert to body velocity if needed
-        if quat_is_body_to_world:
-            v_B = R_WB.T @ v_W
-        else:
-            v_B = R_WB @ v_W
+        # build axis conversion IMU->FLU
+        R_IF = np.array([
+            [0, 0, 1],  # FLU_x  <- IMU_z
+            [1, 0, 0],  # FLU_y  <- IMU_x
+            [0, 1, 0],  # FLU_z  <- IMU_y
+        ], dtype=float)
 
-        # === extract Euler ===
-        roll, pitch, yaw = quat_to_euler(qx, qy, qz, qw)  # radians
+        # ===== express velocity in FLU body frame =====
+        v_F = R_IF @ (R_WI @ v_W)
+
+        # ===== compute FLU quaternion =====
+        # world→FLU = (IMU→FLU) ∘ (world→IMU)
+        R_WF = R_IF @ R_WI
+        q_WF = rotmat_to_quat(R_WF)
+
+        qx_, qy_, qz_, qw_ = q_WF
+        roll, pitch, yaw = quat_to_euler(qx_, qy_, qz_, qw_, order="ZYX")
+
         roll_deg  = np.degrees(roll)
         pitch_deg = np.degrees(pitch)
-        yaw_deg   = np.degrees(yaw)
 
-        # print(f"[GT] roll = {roll_deg:.2f} deg, pitch = {pitch_deg:.2f} deg, yaw = {yaw_deg:.2f} deg")
-        # print(f"[GT] v_W = [{v_W[0]:.3f}, {v_W[1]:.3f}, {v_W[2]:.3f}] m/s")
-        # print(f"[GT] v_B = [{v_B[0]:.3f}, {v_B[1]:.3f}, {v_B[2]:.3f}] m/s")
+        return v_F.astype(np.float32), (roll_deg, pitch_deg)
 
-        return v_B.astype(np.float32)
 
 
     def _gt_velocity_to_body(self,
-                            gt_state_slice,
+                            gt_IMU_frame_slice,
                             quat_is_body_to_world=True,
                             output_convention="FLU"):
 
-        if len(gt_state_slice) < 2:
+        if len(gt_IMU_frame_slice) < 2:
             return np.zeros(3, dtype=np.float32)
 
-        t_us = np.asarray(gt_state_slice["timestamp"], dtype=np.int64)
-        pos = np.vstack([gt_state_slice["px"],
-                        gt_state_slice["py"],
-                        gt_state_slice["pz"]]).T
+        t_us = np.asarray(gt_IMU_frame_slice["timestamp"], dtype=np.int64)
+        pos = np.vstack([gt_IMU_frame_slice["px"],
+                        gt_IMU_frame_slice["py"],
+                        gt_IMU_frame_slice["pz"]]).T
 
         dt = (t_us[-1] - t_us[0]) * 1e-6
         if dt <= 0:
@@ -751,10 +759,10 @@ class VisionNodeUZHFPVEventsPlayback:
 
         # use midpoint orientation (better instantaneous estimate)
         mid_idx = len(t_us) // 2
-        q = [gt_state_slice["qx"][mid_idx],
-            gt_state_slice["qy"][mid_idx],
-            gt_state_slice["qz"][mid_idx],
-            gt_state_slice["qw"][mid_idx]]
+        q = [gt_IMU_frame_slice["qx"][mid_idx],
+            gt_IMU_frame_slice["qy"][mid_idx],
+            gt_IMU_frame_slice["qz"][mid_idx],
+            gt_IMU_frame_slice["qw"][mid_idx]]
 
         R_WB = quat_to_rotmat(*q)
 
@@ -776,18 +784,23 @@ class VisionNodeUZHFPVEventsPlayback:
     def _get_initial_offset(self):
         """
         GT pose and altitude "pz" is relative to inertial frame. their 0 altitude is not applied to the exact ground level.
-        So read the stamped_gt_cam_us.txt inside the events_dir to get the initial offset.
+        So read the groundtruth.txt inside the events_dir to get the initial offset.
         """
 
-        #read first line of stamped_gt_cam_us.txt
-        gt_file = os.path.join(self.events_dir, "stamped_groundtruth_us_cam.txt")
+        #read first line of groundtruth.txt
+        gt_file = os.path.join(self.events_dir, "groundtruth.txt")
         if not os.path.isfile(gt_file):
             print(f"[WARNING] GT file not found: {gt_file}")
             print("[WARNING] Cannot compute initial altitude offset. Using 0.0 m.")
             return 0.0
         
         with open(gt_file, 'r') as f:
-            first_line = f.readline().strip()
+            #skip header lines starting with #
+            first_line = ""
+            for line in f:
+                if not line.startswith("#"):
+                    first_line = line.strip()
+                    break
             parts = first_line.split()
             if len(parts) < 5:
                 print(f"[WARNING] GT file badly formatted: {gt_file}")
@@ -800,16 +813,16 @@ class VisionNodeUZHFPVEventsPlayback:
             print(f"[INFO] Initial altitude offset computed: {initial_offset:.3f} m")
             return initial_offset
     
-    def _get_position_world(self, gt_state_slice):
+    def _get_position_world(self, gt_IMU_frame_slice):
         """
-        Extracts the mean position in world frame from the gt_state_slice.
+        Extracts the mean position in world frame from the gt_IMU_frame_slice.
         """
-        if len(gt_state_slice) == 0:
+        if len(gt_IMU_frame_slice) == 0:
             return np.zeros(3, dtype=np.float32)
 
-        px = np.mean(gt_state_slice.get("px", 0.0))
-        py = np.mean(gt_state_slice.get("py", 0.0))
-        pz = np.mean(gt_state_slice.get("pz", 0.0))
+        px = np.mean(gt_IMU_frame_slice.get("px", 0.0))
+        py = np.mean(gt_IMU_frame_slice.get("py", 0.0))
+        pz = np.mean(gt_IMU_frame_slice.get("pz", 0.0))
 
         position_world = np.array([px, py, pz], dtype=np.float32)
         return position_world
