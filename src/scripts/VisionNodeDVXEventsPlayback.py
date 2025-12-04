@@ -261,7 +261,7 @@ class VisionNodeDVXEventsPlayback:
     # --------------------------------------------------------
     def run(self):
         if self.slicing_type == "mvsec" or self.slicing_type == "fixed":
-            self._run_fixed_slicing()
+            self._run_slicing()
 
         else:
             raise ValueError(f"Unknown slicing type: {self.slicing_type}")
@@ -271,7 +271,7 @@ class VisionNodeDVXEventsPlayback:
     # --------------------------------------------------------
     # RUN: fixed slicing con mvsec_evs_iterator
     # --------------------------------------------------------
-    def _run_fixed_slicing(self):
+    def _run_slicing(self):
         print("[VisionNodeEventsPlayback] Running unified event+GT iterator.")
 
         iterator = dvxplorer_evs_iterator(
