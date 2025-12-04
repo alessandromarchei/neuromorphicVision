@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run", type=str, required=False,
+    parser.add_argument("--run", type=str, required=False, default="fpv_evs_playback",
                         help="Experiment name used for saving logs and plots inside runs/<name>/")
     parser.add_argument("--yaml", type=str, default="config/config_fpv.yaml",
                         help="YAML config path.")

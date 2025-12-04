@@ -114,6 +114,7 @@ class VisionNodeUZHFPVEventsPlayback:
 
         # Variabili di stato per il calcolo dell'errore
         self.total_alt_error = 0.0
+        self.total_rel_error = 0.0
         self.total_frames_with_alt = 0
         self.initial_altitude_offset = 0.0 # Rimosso l'inizializzazione statica, è gestita in _get_initial_offset()
         
@@ -178,7 +179,6 @@ class VisionNodeUZHFPVEventsPlayback:
 
         # FAST detector
         self._initializeFeatureDetector()
-        self._initializeEventDataAdaptive()
 
         # print("Loaded configuration:")
         # print(yaml.dump(self.config, default_flow_style=False))
@@ -633,43 +633,90 @@ class VisionNodeUZHFPVEventsPlayback:
                 self._applyDerotation3D_events(fv, self.curr_gyro_cam)
 
     def _applyDerotation3D_events(self, ofVector, gyro_cam):
-        # 1. Flow 3D RAW (normalizzato, rad/s)
-        # Utilizza i campi RAW pre-calcolati nell'init.
-        u_raw_3D = np.array([
-            ofVector.uNormSec_raw,
-            ofVector.vNormSec_raw,
-            0.0
+        
+        # --- 1. Calcolo di Pprime_ms e Norm_a (Come in C++) ---
+        
+        # Norm_a = norma di AMeter (vettore di profondità stimata/inversa, se presente)
+        # Assunzione: ofVector.AMeter è un array/list di 3 elementi
+        norm_a = np.linalg.norm(ofVector.AMeter)
+        
+        # Pprime_ms: Flusso RAW scalato da pixel/s a un'unità equivalente a metro/secondo
+        # Pprime_ms[0] = uPixelSec * pixelSize
+        # Pprime_ms[1] = vPixelSec * pixelSize
+        
+        # Nota: Usiamo i campi RAW originali (non uNormSec_raw)
+        Pprime_ms = np.array([
+            ofVector.uPixelSec * ofVector.camParams.pixelSize, 
+            ofVector.vPixelSec * ofVector.camParams.pixelSize
         ], dtype=np.float32)
         
-        # 2. Componente Rotazionale (RotOF)
-        # RotOF = omega x D. Unità: rad/s (normalizzato)
-        RotOF_3D = np.cross(gyro_cam, ofVector.directionVector) 
-
-        # 3. Calcola il Flow Derotato 3D (Normalizzato)
+        # PpPprime_ms: Pprime_ms normalizzato dalla norma del vettore A (3D)
+        if norm_a < 1e-6:
+             # Evita divisione per zero. Se norm_a è 0, i calcoli successivi sono invalidi.
+             PpPprime_ms = np.array([0.0, 0.0, 0.0])
+        else:
+            PpPprime_ms = np.array([
+                Pprime_ms[0] / norm_a, 
+                Pprime_ms[1] / norm_a, 
+                0.0
+            ], dtype=np.float32)
         
-        # *** SCELTA CRUCIALE DEL SEGNO PER LA DIAGNOSI ***
-        # Utilizziamo la sottrazione teoricamente corretta per la rimozione della rotazione:
-        u_derotata_3D = u_raw_3D - RotOF_3D
+        # --- 2. Step 1 C++: Proiezione Perpendicolare (P) ---
+        # P = PpPprime_ms - (PpPprime_ms . directionVector) * directionVector
         
-        # SE IL RAPPORTO DEROTATED/RAW È > 1.0 (COME NEL TUO TEST),
-        # PROVA A INVERTIRE IL SEGNO QUI: u_derotata_3D = u_raw_3D + RotOF_3D
-
-        # Forza Z=0 per il flusso 2D sul piano focale
-        u_derotata_3D[2] = 0.0
+        # ofVector.directionVector è il raggio ottico 3D (unitario) [x/d, y/d, 1/d]
+        dot_product = np.dot(PpPprime_ms, ofVector.directionVector)
         
-        # Assegna il risultato (Flow 3D Normalizzato), usato da _estimateDepth
+        # Vettore P (non ancora derotato)
+        P = PpPprime_ms - (dot_product * ofVector.directionVector)
+        
+        
+        # --- 3. Step 2 C++: Componente Rotazionale e Sottrazione ---
+        
+        # RotOF C++: -avgGyroRadSec.cross(ofVector.directionVector)
+        # RotOF Python: -np.cross(gyro_cam, ofVector.directionVector)
+        # (Ricorda, il Python np.cross(A, B) è come il C++ A.cross(B))
+        RotOF_3D = -np.cross(gyro_cam, ofVector.directionVector)
+        
+        # Flusso Derotato Finale (ofVector.P)
+        # ofVector.P = P - RotOF
+        u_derotata_3D = P - RotOF_3D
+        
+        # Forza Z=0 per il flusso 2D sul piano focale (NOTA: questo passo NON è in C++,
+        # ma è necessario se ofVector.P viene trattato come flow 2D/3D normalizzato altrove)
+        # Lo omettiamo per la fedeltà al C++, assumendo che P verrà usato come un vettore 3D.
+        # u_derotata_3D[2] = 0.0 
+        
+        # Assegna il risultato (Flow 3D Normalizzato/Scalato)
         ofVector.P = u_derotata_3D
         
-        # 4. Riconversione in Pixel/Second e DeltaX/DeltaY
+        
+        # --- 4. Riconversione per Logging (Logica Invariata) ---
 
         # Componenti derotate normalizzate
+        # Usiamo solo X e Y dal vettore 3D P (Assunzione: queste sono le componenti 2D del flow)
         derot_u_norm_sec = ofVector.P[0]
         derot_v_norm_sec = ofVector.P[1]
 
-        # Flusso derotato in Pixel/s
-        ofVector.uPixelSec_derot = derot_u_norm_sec * ofVector.camParams.fx
-        ofVector.vPixelSec_derot = derot_v_norm_sec * ofVector.camParams.fy
+        # Invertiamo il calcolo per Pixel/s (scalando indietro)
+        # NOTA: La logica C++ usa Pprime_ms scalato con pixelSize, ma il Python logging vuole Pixel/s.
+        # Dobbiamo trovare il fattore di scaling inverso.
+
+        # Se PpPprime_ms[0] = uPixelSec * pixelSize / norm_a
+        # Allora uPixelSec = PpPprime_ms[0] * norm_a / pixelSize
         
+        if norm_a < 1e-6 or ofVector.camParams.pixelSize < 1e-9:
+             # Caso di emergenza per evitare NaN nel log
+             ofVector.uPixelSec_derot = 0.0
+             ofVector.vPixelSec_derot = 0.0
+        else:
+            # Calcolo inverso delle unità di flow in pixel/s
+            u_derot_raw_units = (derot_u_norm_sec * norm_a) / ofVector.camParams.pixelSize
+            v_derot_raw_units = (derot_v_norm_sec * norm_a) / ofVector.camParams.pixelSize
+            
+            ofVector.uPixelSec_derot = u_derot_raw_units
+            ofVector.vPixelSec_derot = v_derot_raw_units
+
         # Delta X/Y in pixel (rispetto a dt = 1/fps)
         if ofVector.fps > 0:
             ofVector.deltaX_derot = ofVector.uPixelSec_derot / ofVector.fps
@@ -679,11 +726,18 @@ class VisionNodeUZHFPVEventsPlayback:
             )
         else:
             ofVector.magnitudePixel_derot = 0.0
-
+            
         # 5. Salva le Magnitudini per l'analisi dei rapporti
-        ofVector.magnitude_raw = np.linalg.norm(u_raw_3D[:2])
+        
+        # Flusso RAW in coordinate Normalizzate Originali
+        raw_norm_3D = np.array([ofVector.uNormSec_raw, ofVector.vNormSec_raw, 0.0])
+        
+        ofVector.magnitude_raw = np.linalg.norm(raw_norm_3D[:2])
         ofVector.magnitude_rotational = np.linalg.norm(RotOF_3D[:2])
-        ofVector.magnitude_derotated = np.linalg.norm(ofVector.P[:2])
+        
+        # Per la derotated magnitude, usiamo la norma 2D del risultato C++ (non le unità del log)
+        # Usiamo il flow derotato in coordinate normalizzate (rad/s)
+        ofVector.magnitude_derotated = np.linalg.norm(u_derotata_3D[:2])
 
     def _get_imu(self, cam_imu_slice):
         """
@@ -717,7 +771,7 @@ class VisionNodeUZHFPVEventsPlayback:
             return 0.0
 
         try:
-            data = np.loadtxt(gt_file, comments="#", delimiter=",", skiprows=1)
+            data = np.loadtxt(gt_file, comments="#", delimiter=" ", skiprows=1)
             # data shape -> N x 8   (ts, px, py, pz, qx, qy, qz, qw)
 
             return float(data[0, 3])  # 4th column = pz
