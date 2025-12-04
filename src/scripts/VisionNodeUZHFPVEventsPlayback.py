@@ -83,8 +83,22 @@ class VisionNodeUZHFPVEventsPlayback:
 
         self.prevFilteredAltitude = 0.0
         self.filteredAltitude = 0.0
-        self.avgAltitude = 0.0
-        self.unfilteredAltitude = 0.0
+        self.raw_altitude = 0.0
+
+        # Aggiungi a __init__ (o dove memorizzi i log):
+        self.log_flow_data = {
+            'frame_id': [],
+            # Pixel/s
+            'u_raw_mean': [],
+            'v_raw_mean': [],
+            'u_derot_mean': [],
+            'v_derot_mean': [],
+            # Delta X/Y (pixel)
+            'dx_raw_mean': [],
+            'dy_raw_mean': [],
+            'dx_derot_mean': [],
+            'dy_derot_mean': [],
+        }
 
         # Altitude Filters
         self.smoothingFilterType = 0
@@ -284,6 +298,9 @@ class VisionNodeUZHFPVEventsPlayback:
     def run(self):
         if self.slicing_type in ["mvsec", "fixed"]:
             self._run_fixed_slicing()
+
+            self.plot_flow_components()
+
         else:
             raise ValueError(f"Unknown slicing type: {self.slicing_type}")
 
@@ -369,6 +386,75 @@ class VisionNodeUZHFPVEventsPlayback:
 
         self._calculateOpticalFlow(self.currFrame)
 
+
+        if len(self.filteredFlowVectors) > 0:
+    
+            # ----------------------------------------------------
+            # A) CALCOLO DELLE MEDIE (RAW vs DEROTATED)
+            # ----------------------------------------------------
+            
+            # RAW (usa i campi originali: uPixelSec, deltaX)
+            u_pix_raw = np.array([fv.uPixelSec for fv in self.filteredFlowVectors])
+            v_pix_raw = np.array([fv.vPixelSec for fv in self.filteredFlowVectors])
+            dx_raw    = np.array([fv.deltaX for fv in self.filteredFlowVectors])
+            dy_raw    = np.array([fv.deltaY for fv in self.filteredFlowVectors])
+            
+            # DEROTATED (usa i nuovi campi: uPixelSec_derot, deltaX_derot)
+            u_pix_derot = np.array([fv.uPixelSec_derot for fv in self.filteredFlowVectors])
+            v_pix_derot = np.array([fv.vPixelSec_derot for fv in self.filteredFlowVectors])
+            dx_derot    = np.array([fv.deltaX_derot for fv in self.filteredFlowVectors])
+            dy_derot    = np.array([fv.deltaY_derot for fv in self.filteredFlowVectors])
+
+            # Calcola le medie
+            mean_u_pix_raw = np.median(u_pix_raw) # Usiamo la mediana per robustezza agli outlier
+            mean_v_pix_raw = np.median(v_pix_raw)
+            mean_u_pix_derot = np.median(u_pix_derot)
+            mean_v_pix_derot = np.median(v_pix_derot)
+            
+            mean_dx_raw = np.median(dx_raw)
+            mean_dy_raw = np.median(dy_raw)
+            mean_dx_derot = np.median(dx_derot)
+            mean_dy_derot = np.median(dy_derot)
+            
+            # ----------------------------------------------------
+            # B) LOGGING
+            # ----------------------------------------------------
+
+            self.log_flow_data['frame_id'].append(self.frameID)
+            self.log_flow_data['u_raw_mean'].append(mean_u_pix_raw)
+            self.log_flow_data['v_raw_mean'].append(mean_v_pix_raw)
+            self.log_flow_data['u_derot_mean'].append(mean_u_pix_derot)
+            self.log_flow_data['v_derot_mean'].append(mean_v_pix_derot)
+            self.log_flow_data['dx_raw_mean'].append(mean_dx_raw)
+            self.log_flow_data['dy_raw_mean'].append(mean_dy_raw)
+            self.log_flow_data['dx_derot_mean'].append(mean_dx_derot)
+            self.log_flow_data['dy_derot_mean'].append(mean_dy_derot)
+            
+            # ----------------------------------------------------
+            # C) STAMPA (Per Diagnosi Immediata)
+            # ----------------------------------------------------
+            
+            raw_mags = np.array([fv.magnitude_raw for fv in self.filteredFlowVectors])
+            rot_mags = np.array([fv.magnitude_rotational for fv in self.filteredFlowVectors])
+            derot_mags = np.array([fv.magnitude_derotated for fv in self.filteredFlowVectors])
+            
+            # Analisi Magnitudine (con mediana per robustezza)
+            median_raw_mag = np.median(raw_mags)
+            median_rot_mag = np.median(rot_mags)
+            
+            print("--- 🔬 Analisi Vettoriale Dettagliata ---")
+            print(f"Mediana Flow RAW (norm): {median_raw_mag:.4f}")
+            print(f"Mediana Flow Rotazionale: {median_rot_mag:.4f}")
+            print(f"Mediana Flow Derotato (norm): {np.median(derot_mags):.4f}")
+            print(f"Rapporto Rotazionale/RAW: {median_rot_mag / (median_raw_mag + 1e-6):.3f}")
+            
+            print("\nVALORI MEDIANI:")
+            print(f"PIXEL/SEC - RAW (u, v): ({mean_u_pix_raw:.2f}, {mean_v_pix_raw:.2f})")
+            print(f"PIXEL/SEC - DEROT (u, v): ({mean_u_pix_derot:.2f}, {mean_v_pix_derot:.2f})")
+            print(f"DELTA PIXEL - RAW (dx, dy): ({mean_dx_raw:.3f}, {mean_dy_raw:.3f})")
+            print(f"DELTA PIXEL - DEROT (dx, dy): ({mean_dx_derot:.3f}, {mean_dy_derot:.3f})")
+            print("------------------------------------------")
+
         # Visualization
         if self.visualizeImage:
             visualize_image(self.currFrame, self.currPoints, self.prevPoints, self.status)
@@ -396,22 +482,21 @@ class VisionNodeUZHFPVEventsPlayback:
 
         # 6. Averaging & Filtering Altitude
         if not altitudes:
-            self.avgAltitude = self.prevFilteredAltitude
+            self.raw_altitude = self.prevFilteredAltitude
         else:
             # Median filter robusto agli outlier
-            self.avgAltitude = np.median(altitudes)
+            self.raw_altitude = np.median(altitudes)
 
-        if self.avgAltitude >= self.saturationValue:
-            self.avgAltitude = self.saturationValue
-        if math.isnan(self.avgAltitude):
-            self.avgAltitude = self.prevFilteredAltitude
+        if self.raw_altitude >= self.saturationValue:
+            self.raw_altitude = self.saturationValue
+        if math.isnan(self.raw_altitude):
+            self.raw_altitude = self.prevFilteredAltitude
 
-        self.unfilteredAltitude = self.avgAltitude
 
         # Complementary Filter
         dt_s = self.deltaTms / 1000.0
         self.filteredAltitude = complementaryFilter(
-            self.avgAltitude,
+            self.raw_altitude,
             self.prevFilteredAltitude,
             self.complementaryK,
             dt_s
@@ -426,7 +511,9 @@ class VisionNodeUZHFPVEventsPlayback:
         else:
             gt_alt = 0.0
 
-        print(f"ALT: Est={self.filteredAltitude:.3f} | GT={gt_alt:.3f}")
+        print(f"ALT: Raw Altitude = {self.raw_altitude:.3f} m \n\
+                | Est={self.filteredAltitude:.3f} m \n\
+                | GT={gt_alt:.3f}")
 
 
     # --------------------------------------------------------
@@ -608,27 +695,80 @@ class VisionNodeUZHFPVEventsPlayback:
                 self._applyDerotation3D_events(fv, self.curr_gyro_cam)
 
     def _applyDerotation3D_events(self, ofVector, gyro_cam):
-        # Implementazione identica alla tua, usando gyro_cam
-        norm_a = np.linalg.norm(ofVector.AMeter)
-        Pprime_ms = np.array([
-            ofVector.uPixelSec * self.camParams.pixelSize,
-            ofVector.vPixelSec * self.camParams.pixelSize
+        # 1. Flow 3D RAW (normalizzato, rad/s)
+        # Utilizza i campi RAW pre-calcolati nell'init.
+        u_raw_3D = np.array([
+            ofVector.uNormSec_raw,
+            ofVector.vNormSec_raw,
+            0.0
         ], dtype=np.float32)
-        PpPprime_ms = np.array([Pprime_ms[0]/norm_a, Pprime_ms[1]/norm_a, 0.0], dtype=np.float32)
         
-        dot_val = np.dot(PpPprime_ms, ofVector.directionVector)
-        P = PpPprime_ms - dot_val * ofVector.directionVector
-        cross_val = np.cross(gyro_cam, ofVector.directionVector)
-        RotOF = -cross_val
-        ofVector.P = P - RotOF # Flow derotato puramente traslazionale
+        # 2. Componente Rotazionale (RotOF)
+        # RotOF = omega x D. Unità: rad/s (normalizzato)
+        RotOF_3D = np.cross(gyro_cam, ofVector.directionVector) 
+
+        # 3. Calcola il Flow Derotato 3D (Normalizzato)
+        
+        # *** SCELTA CRUCIALE DEL SEGNO PER LA DIAGNOSI ***
+        # Utilizziamo la sottrazione teoricamente corretta per la rimozione della rotazione:
+        u_derotata_3D = u_raw_3D - RotOF_3D
+        
+        # SE IL RAPPORTO DEROTATED/RAW È > 1.0 (COME NEL TUO TEST),
+        # PROVA A INVERTIRE IL SEGNO QUI: u_derotata_3D = u_raw_3D + RotOF_3D
+
+        # Forza Z=0 per il flusso 2D sul piano focale
+        u_derotata_3D[2] = 0.0
+        
+        # Assegna il risultato (Flow 3D Normalizzato), usato da _estimateDepth
+        ofVector.P = u_derotata_3D
+        
+        # 4. Riconversione in Pixel/Second e DeltaX/DeltaY
+
+        # Componenti derotate normalizzate
+        derot_u_norm_sec = ofVector.P[0]
+        derot_v_norm_sec = ofVector.P[1]
+
+        # Flusso derotato in Pixel/s
+        ofVector.uPixelSec_derot = derot_u_norm_sec * ofVector.camParams.fx
+        ofVector.vPixelSec_derot = derot_v_norm_sec * ofVector.camParams.fy
+        
+        # Delta X/Y in pixel (rispetto a dt = 1/fps)
+        if ofVector.fps > 0:
+            ofVector.deltaX_derot = ofVector.uPixelSec_derot / ofVector.fps
+            ofVector.deltaY_derot = ofVector.vPixelSec_derot / ofVector.fps
+            ofVector.magnitudePixel_derot = math.sqrt(
+                ofVector.deltaX_derot**2 + ofVector.deltaY_derot**2
+            )
+        else:
+            ofVector.magnitudePixel_derot = 0.0
+
+        # 5. Salva le Magnitudini per l'analisi dei rapporti
+        ofVector.magnitude_raw = np.linalg.norm(u_raw_3D[:2])
+        ofVector.magnitude_rotational = np.linalg.norm(RotOF_3D[:2])
+        ofVector.magnitude_derotated = np.linalg.norm(ofVector.P[:2])
 
     def _get_imu(self, cam_imu_slice):
+        """
+        cam imu is in reality defined in the D frame in the UZH-FPV paper.
+        so it is the imu on the camera, however the reference system is X-left, Y-up, Z-forward
+        return IMU on the proper CAMERA FRAME : X-right, Y-down, Z-forward
+        """
+
+        R_IC = np.array([
+            [-1,  0,  0],
+            [ 0, -1,  0],
+            [ 0,  0,  1]
+        ])
+
         if len(cam_imu_slice) == 0: return np.zeros(3, dtype=np.float32)
-        return np.array([
+        
+        imu_raw = np.array([
             np.mean(cam_imu_slice.get("gx", 0.0)),
             np.mean(cam_imu_slice.get("gy", 0.0)),
             np.mean(cam_imu_slice.get("gz", 0.0))
         ], dtype=np.float32)
+
+        return R_IC @ imu_raw
 
     def _get_initial_offset(self):
         gt_file = os.path.join(self.events_dir, "groundtruth.txt")
@@ -646,3 +786,42 @@ class VisionNodeUZHFPVEventsPlayback:
         except Exception as e:
             print(f"loadtxt failed: {e}")
             return 0.0
+
+    # Nel corpo della classe VisionNodeUZHFPVEventsPlayback
+
+    def plot_flow_components(self):
+        """Visualizza i componenti u e v medi RAW vs DEROTATED."""
+        
+        if not self.log_flow_data['frame_id']:
+            print("Nessun dato di flusso registrato per il plotting.")
+            return
+
+        # Estrai i dati
+        frames = self.log_flow_data['frame_id']
+        u_raw = np.array(self.log_flow_data['u_raw_mean'])
+        v_raw = np.array(self.log_flow_data['v_raw_mean'])
+        u_derot = np.array(self.log_flow_data['u_derot_mean'])
+        v_derot = np.array(self.log_flow_data['v_derot_mean'])
+
+        # Crea due sub-plot
+        fig, axes = plt.subplots(2, 1, sharex=True, figsize=(12, 8))
+        
+        # --- Componente U (orizzontale) ---
+        axes[0].plot(frames, u_raw, label='RAW $\\bar{u}$', alpha=0.7)
+        axes[0].plot(frames, u_derot, label='DEROTATED $\\bar{u}$', color='red', linewidth=2)
+        axes[0].set_title('Componente Media Orizzontale ($u$) del Flusso Ottico (rad/s)')
+        axes[0].set_ylabel('$u$ (rad/s)')
+        axes[0].grid(True, linestyle=':')
+        axes[0].legend()
+
+        # --- Componente V (verticale) ---
+        axes[1].plot(frames, v_raw, label='RAW $\\bar{v}$', alpha=0.7)
+        axes[1].plot(frames, v_derot, label='DEROTATED $\\bar{v}$', color='red', linewidth=2)
+        axes[1].set_title('Componente Media Verticale ($v$) del Flusso Ottico (rad/s)')
+        axes[1].set_xlabel('Frame ID')
+        axes[1].set_ylabel('$v$ (rad/s)')
+        axes[1].grid(True, linestyle=':')
+        axes[1].legend()
+
+        plt.tight_layout()
+        plt.show()

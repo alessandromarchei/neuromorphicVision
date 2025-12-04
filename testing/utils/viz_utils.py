@@ -13,7 +13,7 @@ def visualize_image(currFrame, currPoints, prevPoints, status):
         if status[i] == 1:
             p1 = tuple(map(int, prevPoints[i]))
             p2 = tuple(map(int, currPoints[i]))
-            cv2.arrowedLine(flowVis, p1, p2, (0, 0, 255), 2)
+            cv2.arrowedLine(flowVis, p1, p2, (0, 0, 255), 2, tipLength=1)
     cv2.imshow("OF_raw", flowVis)
     # cv2.waitKey(delay)
 
@@ -84,7 +84,7 @@ def visualize_filtered_flow(currFrame, filtered_vectors, win_name="OF_filtered")
         p2 = tuple(map(int, fv.nextPosition))
 
         # Blu (B,G,R) = (255, 0, 0)
-        cv2.arrowedLine(flowVis, p1, p2, (255, 0, 0), 2)
+        cv2.arrowedLine(flowVis, p1, p2, (255, 0, 0), 2, tipLength=1)
 
     cv2.imshow(win_name, flowVis)
 
