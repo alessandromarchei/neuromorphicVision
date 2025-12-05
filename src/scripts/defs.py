@@ -184,22 +184,29 @@ class AdaptiveSlicerPID:
 
         slicer_cfg = cfg["SLICING"]
 
-        self.initial_dt = slicer_cfg.get("gt_mode", "dt1")   # dt iniziale
+        if "mvsec" in cfg["EVENTS"]["scene"].lower():
+            self.initial_dt = slicer_cfg.get("gt_mode", "dt1")   # dt iniziale
 
-        if self.initial_dt == "dt1" :
-            if "outdoor" in cfg["EVENTS"]["scene"]:
-                # outdoor: 21.941 ms → 45 hz
-                # indoor: 31.859 ms → ~31 hz     
-                self.initial_dt_ms = 22.0
-            else:
-                self.initial_dt_ms = 32.0
-        elif self.initial_dt == "dt4":
-            if "outdoor" in cfg["EVENTS"]["scene"]:
-                # outdoor: 87.764 ms → ~11.4 hz
-                # indoor: 127.436 ms → ~7.85 hz
-                self.initial_dt_ms = 88.0
-            else:
-                self.initial_dt_ms = 127.0
+            if self.initial_dt == "dt1" :
+                if "outdoor" in cfg["EVENTS"]["scene"]:
+                    # outdoor: 21.941 ms → 45 hz
+                    # indoor: 31.859 ms → ~31 hz     
+                    self.initial_dt_ms = 22.0
+                else:
+                    self.initial_dt_ms = 32.0
+            elif self.initial_dt == "dt4":
+                if "outdoor" in cfg["EVENTS"]["scene"]:
+                    # outdoor: 87.764 ms → ~11.4 hz
+                    # indoor: 127.436 ms → ~7.85 hz
+                    self.initial_dt_ms = 88.0
+                else:
+                    self.initial_dt_ms = 127.0
+
+        elif "fpv" in cfg["EVENTS"]["scene"].lower():
+            self.initial_dt_ms = 33.0  # 30 fps initial guess for FPV scenes
+        else:
+            self.initial_dt_ms = 33.0  # default fallback
+            
 
         ad = cfg["adaptiveSlicing"]
 

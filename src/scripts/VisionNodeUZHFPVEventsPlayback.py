@@ -9,6 +9,7 @@ import cv2
 import csv
 import argparse
 import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec  # <-- aggiungi questo import
 
 # ============================================================
 # IMPORT: adatta questi import ai tuoi file reali
@@ -156,7 +157,7 @@ class VisionNodeUZHFPVEventsPlayback:
             print(f"Setting camera inclination to {self.camParams.inclination}° for '45' dataset.")
 
 
-        if self.rectify: 
+        if self.rectify and "outdoor" not in self.events_dir.lower():
             self._updateCameraParameters()
 
         self.initial_altitude_offset = self._get_initial_offset()
@@ -317,7 +318,7 @@ class VisionNodeUZHFPVEventsPlayback:
             self.events_dir,
             dT_ms=self.fixed_dt_ms,
             H=self.H, W=self.W,
-            adaptive_slicer_pid=self.adaptiveSlicer,
+            adaptive_slicer=self.adaptiveSlicer,
             slicing_type=self.slicing_type,
             use_valid_frame_range=self.use_valid_frame_range,
             rectify=self.rectify
@@ -331,11 +332,21 @@ class VisionNodeUZHFPVEventsPlayback:
                 slice_data["gt_state"]
             )
             self.frameID += 1
+        
+            #update adaptive slicing mechanism
+            new_dt, updated = self.adaptiveSlicer.update(self.filteredFlowVectors)
+            if updated:
+                print(f"[Adaptive PID] dt_\ms updated → {new_dt:.2f}")
 
     # --------------------------------------------------------
     # CORE PROCESSING
     # --------------------------------------------------------
     def _processEventFrame(self, event_frame, t_us, cam_imu_slice, gt_IMU_frame_slice):
+
+        #immediately flip the z axis to be the opposite, only in the outdoor dataset
+        if "outdoor" in self.events_dir.lower():
+            gt_IMU_frame_slice["pz"] = [-z for z in gt_IMU_frame_slice["pz"]]
+
         self.currFrame = event_frame
         
         # Calcola dt_ms (tempo tra frame attuali e precedente per il log)
@@ -345,7 +356,7 @@ class VisionNodeUZHFPVEventsPlayback:
         # 1. IMU (Gyro) extraction
         self.curr_gyro_cam = self._get_imu(cam_imu_slice)
 
-        print(f"Gyro cam : {math.degrees(self.curr_gyro_cam[0]):.3f}, {math.degrees(self.curr_gyro_cam[1]):.3f}, {math.degrees(self.curr_gyro_cam[2]):.3f} deg/s")
+        # print(f"Gyro cam : {math.degrees(self.curr_gyro_cam[0]):.3f}, {math.degrees(self.curr_gyro_cam[1]):.3f}, {math.degrees(self.curr_gyro_cam[2]):.3f} deg/s")
 
         # 2. GT Extraction & Transformation
         # Qui avviene la magia per fixare i sistemi di riferimento.
@@ -387,7 +398,7 @@ class VisionNodeUZHFPVEventsPlayback:
         
         # Sovrascriviamo per usarlo nella stima depth
         self.curr_velocity_cam = bodyToCam(self.curr_velocity_flu, self.camParams)
-        print(f"Velocity Cam: {self.curr_velocity_cam[0]:.3f}, {self.curr_velocity_cam[1]:.3f}, {self.curr_velocity_cam[2]:.3f} m/s")
+        # print(f"Velocity Cam: {self.curr_velocity_cam[0]:.3f}, {self.curr_velocity_cam[1]:.3f}, {self.curr_velocity_cam[2]:.3f} m/s")
 
         # 4. Feature Detection & Flow
         if self.prevFrame is None:
@@ -456,6 +467,9 @@ class VisionNodeUZHFPVEventsPlayback:
 
         # 7. Logging Data
         self.append_log_data(t_us, dt_ms, gt_alt)
+
+        if self.frameID % 100 == 0 and self.frameID > 0:
+            print(f"[Frame {self.frameID}] GT Alt: {gt_alt:.3f} m, Raw Alt: {self.raw_altitude:.3f} m, Filtered Alt: {self.filteredAltitude:.3f} m")
 
 
     # --------------------------------------------------------
@@ -643,16 +657,16 @@ class VisionNodeUZHFPVEventsPlayback:
             u_pix_derot = [fv.uPixelSec_derot for fv in self.filteredFlowVectors]
             v_pix_derot = [fv.vPixelSec_derot for fv in self.filteredFlowVectors]
 
-            if len(u_pix_raw) > 0:
-                avg_u_raw = np.mean(u_pix_raw)
-                avg_v_raw = np.mean(v_pix_raw)
-                avg_u_derot = np.mean(u_pix_derot)
-                avg_v_derot = np.mean(v_pix_derot)
+            # if len(u_pix_raw) > 0:
+            #     avg_u_raw = np.mean(u_pix_raw)
+            #     avg_v_raw = np.mean(v_pix_raw)
+            #     avg_u_derot = np.mean(u_pix_derot)
+            #     avg_v_derot = np.mean(v_pix_derot)
 
-                print(f"Avg Flow Raw: u={avg_u_raw:.2f} px/s, v={avg_v_raw:.2f} px/s \n\
-                      | Derotated: u={avg_u_derot:.2f} px/s, v={avg_v_derot:.2f} px/s")
+            #     # print(f"Avg Flow Raw: u={avg_u_raw:.2f} px/s, v={avg_v_raw:.2f} px/s \n\
+            #     #       | Derotated: u={avg_u_derot:.2f} px/s, v={avg_v_derot:.2f} px/s")
                 
-                print("")
+                # print("")
 
     def _applyDerotation3D_events(self, ofVector, gyro_cam):
         # 1. Flow 3D RAW (normalizzato, rad/s)
@@ -801,7 +815,7 @@ class VisionNodeUZHFPVEventsPlayback:
                 self.total_rel_error += rel_error
                 self.total_frames_with_alt += 1
 
-        print(f"ALT: Raw Altitude = {self.raw_altitude:.3f} m | Est={self.filteredAltitude:.3f} m | GT={gt_alt:.3f} m")
+        # print(f"ALT: Raw Altitude = {self.raw_altitude:.3f} m | Est={self.filteredAltitude:.3f} m | GT={gt_alt:.3f} m")
         self.frameID += 1
 
     def log(self):
@@ -930,54 +944,64 @@ class VisionNodeUZHFPVEventsPlayback:
         plt.close(fig)
         print(f"Plot Flow/IMU salvato in: {plot_path}")
 
-    def _plot_altitude(self):
-        """Genera due plot stacked: Altitudine e Angoli Roll/Pitch."""
-        
-        if not self.log_data['frame_id']:
+    def plot_altitude_dt(self):
+        if not self.log_data['timestamp']:
+            print("No log data to plot.")
             return
 
-        frames = np.array(self.log_data['frame_id'])
-
-        gt_alt      = np.array(self.log_data['gt_alt'])
-        raw_alt     = np.array(self.log_data['raw_alt'])
+        ts_s = np.array(self.log_data['timestamp']) * 1e-6
+        dt_ms = np.array(self.log_data['dt_ms'])
+        gt_alt = np.array(self.log_data['gt_alt'])
+        raw_alt = np.array(self.log_data['raw_alt'])
         filtered_alt = np.array(self.log_data['filtered_alt'])
 
-        roll_deg  = np.array(self.log_data.get('roll_deg', []))
-        pitch_deg = np.array(self.log_data.get('pitch_deg', []))
+        roll_deg = np.array(self.log_data['roll_deg'])
+        pitch_deg = np.array(self.log_data['pitch_deg'])
 
-        fig, axes = plt.subplots(2, 1, sharex=True, figsize=(14, 10))
+        # Figura con 3 subplot uguali (1/3 altezza ciascuno)
+        fig = plt.figure(figsize=(12, 10))
+        gs = GridSpec(3, 1, figure=fig)
 
-        # =====================
-        # 1) ALTITUDE PLOT
-        # =====================
-        axes[0].plot(frames, gt_alt, label='Ground Truth $Z_{GT}$', color='green', linewidth=3, linestyle='--')
-        axes[0].plot(frames, raw_alt, label='Raw Altitude $H_{RAW}$', alpha=0.6, linestyle=':')
-        axes[0].plot(frames, filtered_alt, label='Filtered Altitude $H_{FILT}$', color='red', linewidth=2)
+        # --- Subplot 1: ALTITUDE ---
+        ax_alt = fig.add_subplot(gs[0, 0])
 
-        axes[0].set_title('Altitude Estimation vs Ground Truth')
-        axes[0].set_ylabel('Altitude (m)')
-        axes[0].grid(True, linestyle=':')
-        axes[0].legend()
+        ax_alt.plot(ts_s, gt_alt, label='Ground Truth (GT)', color='black', linewidth=2)
+        ax_alt.plot(ts_s, filtered_alt, label='Estimated (Filtered)', color='green', linestyle='--', linewidth=1.5)
+        ax_alt.plot(ts_s, raw_alt, label='Estimated (Raw/Median)', color='orange', linestyle=':', alpha=0.5)
 
-        # =====================
-        # 2) ROLL & PITCH PLOT
-        # =====================
-        if len(roll_deg) == len(frames):
-            axes[1].plot(frames, roll_deg, label='Roll (deg)', color='blue')
-            axes[1].plot(frames, pitch_deg, label='Pitch (deg)', color='orange')
+        ax_alt.set_title("Stima dell'Altitudine (Filtered vs GT)")
+        ax_alt.set_ylabel('Altitudine (m)')
+        ax_alt.legend(loc='upper right')
+        ax_alt.grid(True, linestyle=':', alpha=0.6)
 
-            axes[1].set_title('Attitude Evolution: Roll & Pitch')
-            axes[1].set_xlabel('Frame Index')
-            axes[1].set_ylabel('Degrees (°)')
-            axes[1].grid(True, linestyle=':')
-            axes[1].legend()
-        else:
-            axes[1].text(0.5, 0.5, "No Roll/Pitch logged", ha='center', va='center')
+        # --- Subplot 2: Δt ---
+        ax_dt = fig.add_subplot(gs[1, 0], sharex=ax_alt)
 
-        plt.tight_layout()
+        ax_dt.plot(ts_s, dt_ms, label='Frame Δt', color='blue')
 
-        plot_path = os.path.join(self.results_dir, f"{self.run_id}_altitude_attitude.png")
+        ax_dt.set_title('Intervallo di Tempo tra Frame (Δt)')
+        ax_dt.set_ylabel('Δt (ms)')
+        ax_dt.grid(True, linestyle=':', alpha=0.6)
+        ax_dt.legend(loc='upper right')
+
+        # --- Subplot 3: Roll vs Pitch ---
+        ax_att = fig.add_subplot(gs[2, 0], sharex=ax_alt)
+
+        ax_att.plot(ts_s, roll_deg, label='Roll (°)', color='red')
+        ax_att.plot(ts_s, pitch_deg, label='Pitch (°)', color='purple')
+
+        ax_att.set_title('Roll & Pitch Angle')
+        ax_att.set_xlabel('Tempo (s)')
+        ax_att.set_ylabel('Angolo (°)')
+        ax_att.grid(True, linestyle=':', alpha=0.6)
+        ax_att.legend(loc='upper right')
+
+        # Rimuove etichette X negli overlay superiori
+        plt.setp(ax_alt.get_xticklabels(), visible=False)
+        plt.setp(ax_dt.get_xticklabels(), visible=False)
+
+        fig.tight_layout()
+
+        plot_path = os.path.join(self.results_dir, "altitude_dt_attitude_diagnostics.png")
         plt.savefig(plot_path)
-        plt.close(fig)
-
-        print(f"Plot Altitude + Attitude salvato in: {plot_path}")
+        print(f"Altitude/dt/attitude diagnostics plot saved to {plot_path}")

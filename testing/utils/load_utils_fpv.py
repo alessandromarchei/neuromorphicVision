@@ -84,7 +84,7 @@ def fpv_evs_iterator(
     scenedir,
     slicing_type="fixed",
     dT_ms=10.0,
-    adaptive_slicer_pid=None,
+    adaptive_slicer=None,
     H=260, W=346,
     use_valid_frame_range=False,
     batch_events=DEFAULT_BATCH_EVENTS,
@@ -162,13 +162,6 @@ def fpv_evs_iterator(
     )
     gt_state_ts = gt_state_group["timestamp"][:] if gt_state_group else None
 
-    # ---------------- GT CAM STATE -------------------
-    gt_cam_state_group = (
-        f_ev["gt_cam/state"]
-        if "gt_cam" in f_ev and "state" in f_ev["gt_cam"]
-        else None
-    )
-    gt_cam_state_ts = gt_cam_state_group["timestamp"][:] if gt_cam_state_group else None
 
     #retrieve valid timestamp range if needed
     valid_ts_range_ts = get_valid_range_from_scene(gt_state_ts) if use_valid_frame_range else None
@@ -178,7 +171,18 @@ def fpv_evs_iterator(
 
     #get the rectify map file
     rect_file = osp.join(scenedir, "rectify_map.h5")
-    rectify_map = read_rmap(rect_file, H=H, W=W)
+    
+    #check existence of rect_file
+    if not osp.exists(rect_file):
+        rectify = False
+        print(f"[UZH-FPV] Rectify map file not found at {rect_file}. Proceeding without rectification.")
+
+        
+    if rect_file is not None and rectify:
+        rectify_map = read_rmap(rect_file, H=H, W=W)
+    else:
+        rectify_map = None
+
 
     # ---------------------------------------------------------
     # Streaming buffer (sliding)
@@ -245,13 +249,22 @@ def fpv_evs_iterator(
         t0_us = t_buf[0]
 
     t_end_us = end_us if valid_ts_range_ts is not None else t_ds[-1]
-    current_dt_ms = float(dT_ms)
+
+    #for the adaptive slicing, choose 30 fps initial dt
+    if slicing_type == "adaptive" and adaptive_slicer is not None:
+        current_dt_ms = adaptive_slicer.get_current_dt_ms()
+    else:
+        current_dt_ms = float(dT_ms)
 
 
     # ---------------------------------------------------------
     # MAIN LOOP
     # ---------------------------------------------------------
     while t0_us < t_end_us:
+
+        #retrieve the adaptive slicer dt if needed
+        if slicing_type == "adaptive" and adaptive_slicer is not None:
+            current_dt_ms = adaptive_slicer.get_current_dt_ms()
 
         t1_us = t0_us + int(current_dt_ms * 1000)
 
@@ -310,12 +323,7 @@ def fpv_evs_iterator(
             gt_state_slice = slice_group_by_time(
                 gt_state_group, gt_state_ts, t0_us, t1_us, "timestamp"
             )
-        
-        gt_cam_state_slice = {}
-        if gt_cam_state_group is not None:
-            gt_cam_state_slice = slice_group_by_time(
-                gt_cam_state_group, gt_cam_state_ts, t0_us, t1_us, "timestamp"
-            )
+    
         
 
         # -----------------------------------------------------
@@ -328,20 +336,7 @@ def fpv_evs_iterator(
             "dt_ms": float(dt_ms_here),
             "cam_imu": cam_imu_slice,
             "gt_state": gt_state_slice,
-            "gt_cam_state": gt_cam_state_slice,
         }
-
-        # -----------------------------------------------------
-        # Adaptive slicing update
-        # -----------------------------------------------------
-        if slicing_type == "adaptive" and adaptive_slicer_pid is not None:
-            try:
-                n_events = end_idx - start_idx
-                new_dt = adaptive_slicer_pid.update(current_dt_ms, n_events)
-                if new_dt is not None and new_dt > 0:
-                    current_dt_ms = float(new_dt)
-            except Exception as e:
-                print("[WARN] PID update failed:", e)
 
         # -----------------------------------------------------
         # REMOVE CONSUMED BUFFER PART

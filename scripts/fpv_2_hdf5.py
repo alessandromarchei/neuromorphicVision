@@ -15,7 +15,7 @@ Convert a folder with:
         # timestamp(s) ang_vel_x ang_vel_y ang_vel_z lin_acc_x lin_acc_y lin_acc_z
 
     groundtruth.txt
-        # #timestamp[us] px py pz qx qy qz qw
+        # #timestamp[s] px py pz qx qy qz qw
         # 2.342751200000000000e+07 -4.9012... 4.3717... -9.5029... -8.2272... 4.2370... -1.7456... 3.3633...
 
 into a MVSEC-like HDF5 file with groups:
@@ -426,7 +426,7 @@ def _load_gt_file(gt_path: Path):
             parts = line.split()
             if len(parts) != 8:
                 continue
-            ts_us_f = float(parts[0])
+            ts_us_f = float(parts[0]) * 1e6
             ts_us = int(round(ts_us_f))
             px = float(parts[1])
             py = float(parts[2])
