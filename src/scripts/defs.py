@@ -128,52 +128,72 @@ class LKParams:
 # If there are other global constants, define them here
 MAX_FPS_FLIR = 60.0
 
+# class OFVectorFrame:
+#     """
+#     Python equivalent of your C++ struct OFVectorFrame.
+#     I campi originali (deltaX, uPixelSec) contengono il flusso RAW.
+#     Vengono aggiunti campi per il flusso DEROTATED e per l'analisi.
+#     """
+#     def __init__(self, p1, p2, fps, camParams):
+#         # --- CAMPI ORIGINALI (RAW FLOW) ---
+#         self.position = p1
+#         self.nextPosition = p2
+#         self.fps = fps # Nuovo: Memorizza fps per la riconversione
+#         self.camParams = camParams # Nuovo: Memorizza camParams per la riconversione
+        
+#         # Flusso RAW in pixel/frame
+#         self.deltaX = p2[0] - p1[0]
+#         self.deltaY = p2[1] - p1[1]
+        
+#         # Flusso RAW in pixel/sec
+#         self.uPixelSec = self.deltaX * fps
+#         self.vPixelSec = self.deltaY * fps
+#         self.magnitudePixel = math.sqrt(self.deltaX**2 + self.deltaY**2)
+        
+#         # Altri campi originali
+#         self.uDegSec = (self.uPixelSec / camParams.fx) * (180.0 / np.pi)
+#         self.vDegSec = (self.vPixelSec / camParams.fy) * (180.0 / np.pi)
+#         self.AMeter = compute_a_vector_meter(self.position, camParams)
+#         self.directionVector = compute_direction_vector(self.position, camParams)
+        
+#         # P = Flow Derotato 3D Normalizzato (necessario per _estimateDepth)
+#         self.P = np.array([0.0, 0.0, 0.0], dtype=np.float32) 
+
+#         # --- CAMPI AGGIUNTIVI PER L'ANALISI (DEROTATED FLOW) ---
+#         self.deltaX_derot = 0.0
+#         self.deltaY_derot = 0.0
+#         self.uPixelSec_derot = 0.0
+#         self.vPixelSec_derot = 0.0
+#         self.magnitudePixel_derot = 0.0
+        
+#         # Campi per l'analisi dei rapporti
+#         self.magnitude_raw = 0.0
+#         self.magnitude_rotational = 0.0
+#         self.magnitude_derotated = 0.0
+
 class OFVectorFrame:
     """
     Python equivalent of your C++ struct OFVectorFrame.
-    I campi originali (deltaX, uPixelSec) contengono il flusso RAW.
-    Vengono aggiunti campi per il flusso DEROTATED e per l'analisi.
     """
     def __init__(self, p1, p2, fps, camParams):
-        # --- CAMPI ORIGINALI (RAW FLOW) ---
         self.position = p1
         self.nextPosition = p2
-        self.fps = fps # Nuovo: Memorizza fps per la riconversione
-        self.camParams = camParams # Nuovo: Memorizza camParams per la riconversione
-        
-        # Flusso RAW in pixel/frame
         self.deltaX = p2[0] - p1[0]
         self.deltaY = p2[1] - p1[1]
-        
-        # Flusso RAW in pixel/sec
         self.uPixelSec = self.deltaX * fps
         self.vPixelSec = self.deltaY * fps
         self.magnitudePixel = math.sqrt(self.deltaX**2 + self.deltaY**2)
 
-        # Flusso RAW in rad/s (normalizzato)
-        self.uNormSec_raw = self.uPixelSec / camParams.fx
-        self.vNormSec_raw = self.vPixelSec / camParams.fy
-        
-        # Altri campi originali
         self.uDegSec = (self.uPixelSec / camParams.fx) * (180.0 / np.pi)
         self.vDegSec = (self.vPixelSec / camParams.fy) * (180.0 / np.pi)
         self.AMeter = compute_a_vector_meter(self.position, camParams)
         self.directionVector = compute_direction_vector(self.position, camParams)
-        
-        # P = Flow Derotato 3D Normalizzato (necessario per _estimateDepth)
-        self.P = np.array([0.0, 0.0, 0.0], dtype=np.float32) 
 
-        # --- CAMPI AGGIUNTIVI PER L'ANALISI (DEROTATED FLOW) ---
-        self.deltaX_derot = 0.0
-        self.deltaY_derot = 0.0
-        self.uPixelSec_derot = 0.0
-        self.vPixelSec_derot = 0.0
-        self.magnitudePixel_derot = 0.0
-        
-        # Campi per l'analisi dei rapporti
-        self.magnitude_raw = 0.0
-        self.magnitude_rotational = 0.0
-        self.magnitude_derotated = 0.0
+        self.camParams = camParams  # Store camParams for potential reconversion
+
+        # 3d derotated vector in space (not normalized). to fill during derotation step
+        self.P = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+
 # ============================================================
 # PID per Adaptive Slicing (versione Python del tuo C++)
 # ============================================================

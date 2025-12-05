@@ -18,9 +18,6 @@ Convert a folder with:
         # #timestamp[us] px py pz qx qy qz qw
         # 2.342751200000000000e+07 -4.9012... 4.3717... -9.5029... -8.2272... 4.2370... -1.7456... 3.3633...
 
-    t_offset_us.txt
-        # single value, e.g. 1.545313677528878000e+15
-
 into a MVSEC-like HDF5 file with groups:
 
     /cam/events/{x,y,t,p}
@@ -121,10 +118,9 @@ def find_required_files(input_dir: Path):
     events_txt = input_dir / "events.txt"
     imu_txt = input_dir / "imu.txt"
     gt_txt = input_dir / "groundtruth.txt"
-    offset_txt = input_dir / "t_offset_us.txt"
 
     missing = []
-    for f in [events_txt, imu_txt, gt_txt, offset_txt]:
+    for f in [events_txt, imu_txt, gt_txt]:
         if not f.is_file():
             missing.append(str(f))
 
@@ -133,27 +129,13 @@ def find_required_files(input_dir: Path):
             "Missing required files:\n" + "\n".join(f" - {m}" for m in missing)
         )
 
-    return events_txt, imu_txt, gt_txt, offset_txt
-
-
-def read_offset_us(offset_path: Path) -> int:
-    """
-    Read the single microsecond offset from t_offset_us.txt.
-    """
-    with open(offset_path, "r") as f:
-        text = f.read().strip()
-    if not text:
-        raise ValueError(f"Offset file is empty: {offset_path}")
-    offset = float(text)
-    offset_int = int(round(offset))
-    logger.info(f"Read t_offset_us = {offset_int} from {offset_path.name}")
-    return offset_int
+    return events_txt, imu_txt, gt_txt
 
 
 # ---------------------------------------------------------------------
 # Multiprocessing workers
 # ---------------------------------------------------------------------
-def _events_worker(events_path: Path, t_offset_us: int, chunk_size: int, queue: mp.Queue):
+def _events_worker(events_path: Path, chunk_size: int, queue: mp.Queue):
     """
     Worker that parses events.txt and pushes chunks of (t,x,y,p) into a queue.
     """
@@ -173,7 +155,7 @@ def _events_worker(events_path: Path, t_offset_us: int, chunk_size: int, queue: 
                 y = int(parts[2])
                 p = int(parts[3])
 
-                t_us = int(round(ts_sec * 1e6)) - t_offset_us
+                t_us = int(round(ts_sec * 1e6))
 
                 buf_t.append(t_us)
                 buf_x.append(x)
@@ -205,7 +187,7 @@ def _events_worker(events_path: Path, t_offset_us: int, chunk_size: int, queue: 
         queue.put(None)
 
 
-def _imu_worker(imu_path: Path, t_offset_us: int, chunk_size: int, queue: mp.Queue):
+def _imu_worker(imu_path: Path, chunk_size: int, queue: mp.Queue):
     """
     Worker that parses imu.txt and pushes chunks of
     (timestamp_us, ax, ay, az, gx, gy, gz) into a queue.
@@ -245,7 +227,7 @@ def _imu_worker(imu_path: Path, t_offset_us: int, chunk_size: int, queue: mp.Que
 
                 #calculate timestamp with imu shift (provided by calibration)
                 imu_shift_us = int(round(CAM_TO_IMU_SHIFT * 1e6))  # ≈ 5733 us
-                t_us = (int(round(ts_sec * 1e6)) - t_offset_us) + imu_shift_us
+                t_us = int(round(ts_sec * 1e6)) + imu_shift_us
 
 
                 buf_t.append(t_us)
@@ -302,7 +284,7 @@ def _imu_worker(imu_path: Path, t_offset_us: int, chunk_size: int, queue: mp.Que
 # ---------------------------------------------------------------------
 # Writing functions
 # ---------------------------------------------------------------------
-def write_cam_events(h5file: h5py.File, events_path: Path, t_offset_us: int,
+def write_cam_events(h5file: h5py.File, events_path: Path,
                      chunk_size: int = 1_000_000):
     """
     Stream events from events.txt into /cam/events/{x,y,t,p} using a
@@ -322,7 +304,7 @@ def write_cam_events(h5file: h5py.File, events_path: Path, t_offset_us: int,
     queue: mp.Queue = ctx.Queue(maxsize=8)
     proc = ctx.Process(
         target=_events_worker,
-        args=(events_path, t_offset_us, chunk_size, queue),
+        args=(events_path, chunk_size, queue),
         daemon=True,
     )
     proc.start()
@@ -353,7 +335,7 @@ def write_cam_events(h5file: h5py.File, events_path: Path, t_offset_us: int,
     logger.info(f"Total events saved: {total_events}")
 
 
-def write_imu(h5file: h5py.File, imu_path: Path, t_offset_us: int,
+def write_imu(h5file: h5py.File, imu_path: Path,
               chunk_size: int = 100_000):
     """
     Stream IMU from imu.txt into /imu/{timestamp,ax,ay,az,gx,gy,gz} using
@@ -377,7 +359,7 @@ def write_imu(h5file: h5py.File, imu_path: Path, t_offset_us: int,
     queue: mp.Queue = ctx.Queue(maxsize=8)
     proc = ctx.Process(
         target=_imu_worker,
-        args=(imu_path, t_offset_us, chunk_size, queue),
+        args=(imu_path, chunk_size, queue),
         daemon=True,
     )
     proc.start()
@@ -544,8 +526,7 @@ def main():
     if not input_dir.is_dir():
         raise NotADirectoryError(f"Input dir does not exist: {input_dir}")
 
-    events_txt, imu_txt, gt_txt, offset_txt = find_required_files(input_dir)
-    t_offset_us = read_offset_us(offset_txt)
+    events_txt, imu_txt, gt_txt = find_required_files(input_dir)
 
     # Derive scene name from folder if output not given
     if args.output is None:
@@ -559,14 +540,13 @@ def main():
     logger.info(f" Events file     : {events_txt.name}")
     logger.info(f" IMU file        : {imu_txt.name}")
     logger.info(f" GT file         : {gt_txt.name}")
-    logger.info(f" Offset file     : {offset_txt.name}")
     logger.info(f" Output HDF5     : {out_path}")
     logger.info("============================================")
 
     # Create HDF5 and fill it
     with h5py.File(out_path, "w") as h5f:
-        write_cam_events(h5f, events_txt, t_offset_us)
-        write_imu(h5f, imu_txt, t_offset_us)
+        write_cam_events(h5f, events_txt)
+        write_imu(h5f, imu_txt)
         write_gt(h5f, gt_txt)
 
     logger.info("============================================")

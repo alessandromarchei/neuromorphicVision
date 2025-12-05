@@ -17,20 +17,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # -------------------------------------------------------
-    # 1) RUN DIRECTORY HANDLING  (OPTIONAL)
-    # -------------------------------------------------------
-    if args.run:
-        run_dir = os.path.join(args.out_dir, args.run)
-        os.makedirs(run_dir, exist_ok=True)
-
-        # save YAML for reproducibility
-        os.system(f"cp {args.yaml} {os.path.join(run_dir, 'config.yaml')}")
-
-    else:
-        run_dir = None
-        log_file = None
-
-    # -------------------------------------------------------
     # 2) RUN VALIDATION PIPELINE
     # -------------------------------------------------------
     node = VisionNodeUZHFPVEventsPlayback(args.yaml, run_id=args.run, out_dir=args.out_dir)
