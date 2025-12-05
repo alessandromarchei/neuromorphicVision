@@ -73,7 +73,6 @@ class VisionNodeUZHFPVEventsPlayback:
 
         self.flowVectors = []
         self.filteredFlowVectors = []
-        self.derotatedFlowVectors = []
         self.of_magnitudes = []
 
         # Data Containers
@@ -102,21 +101,19 @@ class VisionNodeUZHFPVEventsPlayback:
             'raw_alt': [],
             'filtered_alt': [],
             # Flow Componenti Pixel/s
-            'u_pixsec_raw_mean': [],
-            'v_pixsec_raw_mean': [],
-            'u_pixsec_derot_mean': [],
-            'v_pixsec_derot_mean': [],
+            'u_pix_raw_mean': [],
+            'v_pix_raw_mean': [],
+            'u_pix_derot_mean': [],
+            'v_pix_derot_mean': [],
             # Flow Componenti Delta Pixel
             'dx_raw_mean': [],
             'dy_raw_mean': [],
             'dx_derot_mean': [],
             'dy_derot_mean': [],
-            # NEW: Magnitudini per Debug
-            'mag_raw_mean': [],
-            'mag_derot_mean': [],
-            
-            # NUOVO: Conteggio vettori filtrati
-            'filtered_vectors_count': [],
+            # Numero di Features
+            'num_features': [],
+            'roll_deg': [],
+            'pitch_deg': [],
         }
 
         # Variabili di stato per il calcolo dell'errore
@@ -142,8 +139,6 @@ class VisionNodeUZHFPVEventsPlayback:
 
         # load config
         self._loadParametersFromYAML(yaml_path)
-
-        print(self.config)
 
         # event-related config
         events_cfg = self.config["EVENTS"]
@@ -345,9 +340,6 @@ class VisionNodeUZHFPVEventsPlayback:
         
         # Calcola dt_ms (tempo tra frame attuali e precedente per il log)
         dt_ms = (t_us - self.prev_t_us) / 1000.0 if self.frameID > 0 else self.deltaTms
-        self.deltaTms = dt_ms
-        self.fps = 1000.0 / self.deltaTms
-        
         self.prev_t_us = t_us
 
         # 1. IMU (Gyro) extraction
@@ -409,7 +401,7 @@ class VisionNodeUZHFPVEventsPlayback:
         # Visualization
         if self.visualizeImage:
             visualize_image(self.currFrame, self.currPoints, self.prevPoints, self.status)
-            visualize_filtered_flow(self.currFrame, self.derotatedFlowVectors)
+            visualize_filtered_flow(self.currFrame, self.filteredFlowVectors)
             cv2.waitKey(self.delayVisualize)
 
         self.prevPoints.clear()
@@ -422,7 +414,7 @@ class VisionNodeUZHFPVEventsPlayback:
         
         # Filtriamo solo punti con OF significativo
         altitudes = []
-        for fv in self.derotatedFlowVectors:
+        for fv in self.filteredFlowVectors:
             # Calcola Depth lungo l'asse ottico Z
             depth = self._estimateDepth(fv, T_cam)
             # Proietta la depth sull'asse verticale (Ground) usando Roll/Pitch
@@ -553,7 +545,7 @@ class VisionNodeUZHFPVEventsPlayback:
         TdotD = np.dot(T_cam, ofVector.directionVector)
         
         # Componente perpendicolare della velocità (quella che genera parallasse)
-        vel_perp = T_cam - (TdotD * ofVector.directionVector)
+        vel_perp = T_cam - TdotD * ofVector.directionVector
         norm_vel_perp = np.linalg.norm(vel_perp)
         
         # Velocità angolare del flusso (rad/s) = ||flow_pix|| * pixel_size / focal_length ???
@@ -631,13 +623,7 @@ class VisionNodeUZHFPVEventsPlayback:
                 maxLevel=self.lkParams.maxLevel,
                 criteria=self.lkParams.criteria
             )
-
-            # clear every flowvectors data
             self.flowVectors.clear()
-            self.filteredFlowVectors.clear()
-            self.derotatedFlowVectors.clear()
-
-
             if self.currPoints is not None:
                 for i in range(len(self.currPoints)):
                     if self.status[i] == 1:
@@ -647,90 +633,85 @@ class VisionNodeUZHFPVEventsPlayback:
             self.filteredFlowVectors = rejectOutliersFrame(self.flowVectors, self.magnitudeThresholdPixel, self.boundThreshold)
             
             # Derotation
-            self.derotatedFlowVectors = self._applyDerotation3D_events(self.filteredFlowVectors, self.curr_gyro_cam)
+            for fv in self.filteredFlowVectors:
+                self._applyDerotation3D_events(fv, self.curr_gyro_cam)
 
 
-            #print logging. average u and v before and after derotation
-            if len(self.flowVectors) > 0:
-                u_raw = [fv.uPixelSec for fv in self.flowVectors]
-                v_raw = [fv.vPixelSec for fv in self.flowVectors]
-                u_derot = [fv.uPixelSec for fv in self.derotatedFlowVectors]
-                v_derot = [fv.vPixelSec for fv in self.derotatedFlowVectors]
+            #print the log showing average u and v components before and after derotation
+            u_pix_raw = [fv.uPixelSec for fv in self.filteredFlowVectors]
+            v_pix_raw = [fv.vPixelSec for fv in self.filteredFlowVectors]
+            u_pix_derot = [fv.uPixelSec_derot for fv in self.filteredFlowVectors]
+            v_pix_derot = [fv.vPixelSec_derot for fv in self.filteredFlowVectors]
 
-                avg_u_raw = np.mean(u_raw)
-                avg_v_raw = np.mean(v_raw)
-                avg_u_derot = np.mean(u_derot)
-                avg_v_derot = np.mean(v_derot)
+            if len(u_pix_raw) > 0:
+                avg_u_raw = np.mean(u_pix_raw)
+                avg_v_raw = np.mean(v_pix_raw)
+                avg_u_derot = np.mean(u_pix_derot)
+                avg_v_derot = np.mean(v_pix_derot)
 
-                print(f"Optical Flow - Avg U Raw: {avg_u_raw:.3f} px/s, Avg V Raw: {avg_v_raw:.3f} px/s")
-                print(f"Optical Flow - Avg U Derotated: {avg_u_derot:.3f} px/s, Avg V Derotated: {avg_v_derot:.3f} px/s")
+                print(f"Avg Flow Raw: u={avg_u_raw:.2f} px/s, v={avg_v_raw:.2f} px/s \n\
+                      | Derotated: u={avg_u_derot:.2f} px/s, v={avg_v_derot:.2f} px/s")
+                
+                print("")
 
-
-    def _applyDerotation3D_events(self, flowVectors, gyro_cam_radsec):
-
-        """
-        Same logic you posted for applyDerotation3D(...).
-        We replicate the steps to compute a new nextPosition in 2D.
-        """
-        derotatedFlowVectors = []
-
-        for ofVector_original in flowVectors:
-            
-            ofVector_derotated = ofVector_original.clone()
-
-            #proceed with the derotation computation
-
-            norm_a = np.linalg.norm(ofVector_derotated.AMeter)
-            # Pprime_ms = [uPixelSec*pixelSize, vPixelSec*pixelSize]
-            Pprime_ms = np.array([
-                ofVector_derotated.uPixelSec * self.camParams.pixelSize,
-                ofVector_derotated.vPixelSec * self.camParams.pixelSize
-            ], dtype=np.float32)
-
-            # PpPprime_ms => 3D: (x, y, 0) / norm_a
-            PpPprime_ms = np.array([Pprime_ms[0]/norm_a, Pprime_ms[1]/norm_a, 0.0], dtype=np.float32)
-
-            # P = PpPprime_ms - dot(...) * directionVector
-            dot_val = np.dot(PpPprime_ms, ofVector_derotated.directionVector)
-            P = PpPprime_ms - dot_val*ofVector_derotated.directionVector
-
-            # RotOF = -(avgGyroRadSec cross directionVector)
-            cross_val = np.cross(gyro_cam_radsec, ofVector_derotated.directionVector)
-            RotOF = -cross_val
-
-            ofVector_derotated.P = P - RotOF
-
-            # getDerotatedOF_ms => next
-            OF_derotated = self.getDerotatedOF_ms(ofVector_derotated.P, ofVector_derotated.directionVector, ofVector_derotated.AMeter)
-
-            # Now in pixel space for nextPosition
-            derotNextX = ofVector_derotated.position[0] + OF_derotated[0]*self.deltaTms/(self.camParams.pixelSize*1e3)
-            derotNextY = ofVector_derotated.position[1] + OF_derotated[1]*self.deltaTms/(self.camParams.pixelSize*1e3)
-            ofVector_derotated.nextPosition = (derotNextX, derotNextY)
-            ofVector_derotated.deltaX = ofVector_derotated.nextPosition[0] - ofVector_derotated.position[0]
-            ofVector_derotated.deltaY = ofVector_derotated.nextPosition[1] - ofVector_derotated.position[1]
-
-            derotatedFlowVectors.append(ofVector_derotated)
-
-        return derotatedFlowVectors
-
-    def getDerotatedOF_ms(self, P_derotated, d_direction, aVector):
-        """
-        from your getDerotatedOF_ms(...) 
-        """
-        dot_val = np.dot(P_derotated, d_direction)
-        Pprime_derotated = P_derotated + dot_val*d_direction
-        scale = np.linalg.norm(aVector)
-        Pprime_derotated *= scale
-        return np.array([Pprime_derotated[0], Pprime_derotated[1]], dtype=np.float32)
-
+    def _applyDerotation3D_events(self, ofVector, gyro_cam):
+        # 1. Flow 3D RAW (normalizzato, rad/s)
+        # Utilizza i campi RAW pre-calcolati nell'init.
+        u_raw_3D = np.array([
+            ofVector.uNormSec_raw,
+            ofVector.vNormSec_raw,
+            0.0
+        ], dtype=np.float32)
         
+        # 2. Componente Rotazionale (RotOF)
+        # RotOF = omega x D. Unità: rad/s (normalizzato)
+        RotOF_3D = np.cross(gyro_cam, ofVector.directionVector) 
+
+        # 3. Calcola il Flow Derotato 3D (Normalizzato)
+        
+        # *** SCELTA CRUCIALE DEL SEGNO PER LA DIAGNOSI ***
+        # Utilizziamo la sottrazione teoricamente corretta per la rimozione della rotazione:
+        u_derotata_3D = u_raw_3D - RotOF_3D
+        
+        # SE IL RAPPORTO DEROTATED/RAW È > 1.0 (COME NEL TUO TEST),
+        # PROVA A INVERTIRE IL SEGNO QUI: u_derotata_3D = u_raw_3D + RotOF_3D
+
+        # Forza Z=0 per il flusso 2D sul piano focale
+        u_derotata_3D[2] = 0.0
+        
+        # Assegna il risultato (Flow 3D Normalizzato), usato da _estimateDepth
+        ofVector.P = u_derotata_3D
+        
+        # 4. Riconversione in Pixel/Second e DeltaX/DeltaY
+
+        # Componenti derotate normalizzate
+        derot_u_norm_sec = ofVector.P[0]
+        derot_v_norm_sec = ofVector.P[1]
+
+        # Flusso derotato in Pixel/s
+        ofVector.uPixelSec_derot = derot_u_norm_sec * ofVector.camParams.fx
+        ofVector.vPixelSec_derot = derot_v_norm_sec * ofVector.camParams.fy
+        
+        # Delta X/Y in pixel (rispetto a dt = 1/fps)
+        if ofVector.fps > 0:
+            ofVector.deltaX_derot = ofVector.uPixelSec_derot / ofVector.fps
+            ofVector.deltaY_derot = ofVector.vPixelSec_derot / ofVector.fps
+            ofVector.magnitudePixel_derot = math.sqrt(
+                ofVector.deltaX_derot**2 + ofVector.deltaY_derot**2
+            )
+        else:
+            ofVector.magnitudePixel_derot = 0.0
+
+        # 5. Salva le Magnitudini per l'analisi dei rapporti
+        ofVector.magnitude_raw = np.linalg.norm(u_raw_3D[:2])
+        ofVector.magnitude_rotational = np.linalg.norm(RotOF_3D[:2])
+        ofVector.magnitude_derotated = np.linalg.norm(ofVector.P[:2])
+
     def _get_imu(self, cam_imu_slice):
         """
         cam imu is in reality defined in the D frame in the UZH-FPV paper.
         so it is the imu on the camera, however the reference system is X-left, Y-up, Z-forward
-        return IMU on the proper CAMERA FRAME : X-right, Y-down, Z-forward.
-        gyro is in rad/s
+        return IMU on the proper CAMERA FRAME : X-right, Y-down, Z-forward
         """
 
         R_IC = np.array([
@@ -767,78 +748,61 @@ class VisionNodeUZHFPVEventsPlayback:
             return 0.0
 
 
-# --------------------------------------------------------
-    # LOGGING
-    # --------------------------------------------------------
     def append_log_data(self, t_us, dt_ms, gt_alt):
-        # 1. Calcola medie dell'Optical Flow
-        if self.filteredFlowVectors:
-            # Assicurati che questi campi siano stati popolati nel _applyDerotation3D_events
-            u_raw_mean_pixsec = np.mean([fv.uPixelSec for fv in self.filteredFlowVectors])
-            v_raw_mean_pixsec = np.mean([fv.vPixelSec for fv in self.filteredFlowVectors])
-            u_derot_mean_pixsec = np.mean([fv.uPixelSec for fv in self.derotatedFlowVectors])
-            v_derot_mean_pixsec = np.mean([fv.vPixelSec for fv in self.derotatedFlowVectors])
+        if self.frameID > 0:
+            # Flusso (le medie sono già state calcolate nella sezione precedente)
+            u_pix_raw_mean = np.median([fv.uPixelSec for fv in self.filteredFlowVectors]) if self.filteredFlowVectors else 0.0
+            v_pix_raw_mean = np.median([fv.vPixelSec for fv in self.filteredFlowVectors]) if self.filteredFlowVectors else 0.0
+            u_pix_derot_mean = np.median([fv.uPixelSec_derot for fv in self.filteredFlowVectors]) if self.filteredFlowVectors else 0.0
+            v_pix_derot_mean = np.median([fv.vPixelSec_derot for fv in self.filteredFlowVectors]) if self.filteredFlowVectors else 0.0
+            dx_raw_mean = np.median([fv.deltaX for fv in self.filteredFlowVectors]) if self.filteredFlowVectors else 0.0
+            dy_raw_mean = np.median([fv.deltaY for fv in self.filteredFlowVectors]) if self.filteredFlowVectors else 0.0
+            dx_derot_mean = np.median([fv.deltaX_derot for fv in self.filteredFlowVectors]) if self.filteredFlowVectors else 0.0
+            dy_derot_mean = np.median([fv.deltaY_derot for fv in self.filteredFlowVectors]) if self.filteredFlowVectors else 0.0
 
-            dx_raw_mean = np.mean([fv.deltaX for fv in self.filteredFlowVectors])
-            dy_raw_mean = np.mean([fv.deltaY for fv in self.filteredFlowVectors])
-            dx_derot_mean = np.mean([fv.deltaX for fv in self.derotatedFlowVectors])
-            dy_derot_mean = np.mean([fv.deltaY for fv in self.derotatedFlowVectors])
-
-            # Medie Magnitudini (per il check richiesto)
-            mag_raw_mean_pixel = np.mean([fv.magnitudePixel for fv in self.filteredFlowVectors])
-            mag_derot_mean_pixel = np.mean([fv.magnitudePixel for fv in self.derotatedFlowVectors])
-        else:
-            u_raw_mean_pixsec, v_raw_mean_pixsec, u_derot_mean_pixsec, v_derot_mean_pixsec = 0.0, 0.0, 0.0, 0.0
-            dx_raw_mean, dy_raw_mean, dx_derot_mean, dy_derot_mean = 0.0, 0.0, 0.0, 0.0
-            mag_raw_mean_pixel, mag_derot_mean_pixel = 0.0, 0.0, 0.0
-        
-        # 2. Registra i dati
-        self.log_data['timestamp'].append(t_us)
-        self.log_data['frame_id'].append(self.frameID)
-        self.log_data['dt_ms'].append(dt_ms)
-
-        self.log_data['gx_cam'].append(self.curr_gyro_cam[0])
-        self.log_data['gy_cam'].append(self.curr_gyro_cam[1])
-        self.log_data['gz_cam'].append(self.curr_gyro_cam[2])
-
-        self.log_data['gt_alt'].append(gt_alt)
-        self.log_data['raw_alt'].append(self.raw_altitude)
-        self.log_data['filtered_alt'].append(self.filteredAltitude)
-
-        self.log_data['u_pixsec_raw_mean'].append(u_raw_mean_pixsec)
-        self.log_data['v_pixsec_raw_mean'].append(v_raw_mean_pixsec)
-        self.log_data['u_pixsec_derot_mean'].append(u_derot_mean_pixsec)
-        self.log_data['v_pixsec_derot_mean'].append(v_derot_mean_pixsec)
-
-        self.log_data['dx_raw_mean'].append(dx_raw_mean)
-        self.log_data['dy_raw_mean'].append(dy_raw_mean)
-        self.log_data['dx_derot_mean'].append(dx_derot_mean)
-        self.log_data['dy_derot_mean'].append(dy_derot_mean)
-        
-        self.log_data['mag_raw_mean'].append(mag_raw_mean_pixel)
-        self.log_data['mag_derot_mean'].append(mag_derot_mean_pixel)
-
-        # 3. Conteggio vettori filtrati
-        self.log_data['filtered_vectors_count'].append(len(self.filteredFlowVectors))
-
-    def save_log_data(self):
-        # Assicurati che la directory dei risultati esista
-        os.makedirs(self.results_dir, exist_ok=True)
-        filename = os.path.join(self.results_dir, "optical_flow_log.csv")
-        
-        # Scrivi i dati nel file CSV
-        with open(filename, 'w', newline='') as f:
-            writer = csv.writer(f)
+            self.log_data['timestamp'].append(t_us)
+            self.log_data['frame_id'].append(self.frameID)
+            self.log_data['dt_ms'].append(dt_ms)
             
-            # Scrivi l'intestazione
-            header = list(self.log_data.keys())
-            writer.writerow(header)
+            # IMU
+            self.log_data['gx_cam'].append(self.curr_gyro_cam[0])
+            self.log_data['gy_cam'].append(self.curr_gyro_cam[1])
+            self.log_data['gz_cam'].append(self.curr_gyro_cam[2])
             
-            # Transponi i dati per la scrittura riga per riga
-            rows = zip(*self.log_data.values())
-            writer.writerows(rows)
-            
-        print(f"Log data saved to {filename}")
+            # Altitudine
+            self.log_data['gt_alt'].append(gt_alt)
+            self.log_data['raw_alt'].append(self.raw_altitude)
+            self.log_data['filtered_alt'].append(self.filteredAltitude)
+
+            # Flow
+            self.log_data['u_pix_raw_mean'].append(u_pix_raw_mean)
+            self.log_data['v_pix_raw_mean'].append(v_pix_raw_mean)
+            self.log_data['u_pix_derot_mean'].append(u_pix_derot_mean)
+            self.log_data['v_pix_derot_mean'].append(v_pix_derot_mean)
+            self.log_data['dx_raw_mean'].append(dx_raw_mean)
+            self.log_data['dy_raw_mean'].append(dy_raw_mean)
+            self.log_data['dx_derot_mean'].append(dx_derot_mean)
+            self.log_data['dy_derot_mean'].append(dy_derot_mean)
+
+            # NEW ---- attitude logs (convert to degrees once)
+            self.log_data['roll_deg'].append(np.degrees(self.current_roll_angle_rad))
+            self.log_data['pitch_deg'].append(np.degrees(self.current_pitch_angle_rad))
+
+            #add number of features tracked
+            self.log_data['num_features'].append(len(self.filteredFlowVectors))
+
+
+            # Calcolo degli Errori per il Summary
+            if gt_alt > 0.1: # Evita la divisione per zero o altitudini non significative
+                abs_error = abs(self.filteredAltitude - gt_alt)
+                rel_error = abs_error / gt_alt
+                
+                self.total_alt_error += abs_error
+                self.total_rel_error += rel_error
+                self.total_frames_with_alt += 1
+
+        print(f"ALT: Raw Altitude = {self.raw_altitude:.3f} m | Est={self.filteredAltitude:.3f} m | GT={gt_alt:.3f} m")
+        self.frameID += 1
 
     def log(self):
         """Crea la directory dei risultati, salva i dati, i plot e il summary."""
@@ -859,9 +823,7 @@ class VisionNodeUZHFPVEventsPlayback:
 
         # 4. Generazione dei Plot
         self._plot_flow_and_imu()
-        self._plot_flow_components()
         self._plot_altitude()
-
 
         # 5. Salvataggio del Log di Riepilogo
         self._save_summary_log()
@@ -902,64 +864,63 @@ class VisionNodeUZHFPVEventsPlayback:
             mean_rel_error = self.total_rel_error / self.total_frames_with_alt
             
         with open(log_path, 'w') as f:
-            f.write(f"--- Execution Summary: {self.run_id} ---\n")
-            f.write(f"Execution Timestamp: {time.ctime()}\n")
-            f.write(f"Configuration File: {self.yaml_path}\n")
-            f.write(f"Total Frames Processed (with Altitude > 0.1m): {self.total_frames_with_alt}\n\n")
-            f.write("--- Altitude Estimation Performance ---\n")
-            f.write(f"Mean Absolute Error (MAE) on Altitude: {mean_alt_error:.4f} m\n")
-            f.write(f"Mean Relative Error (MRE) on Altitude: {mean_rel_error * 100:.2f} %\n")
+            f.write(f"--- Riepilogo Esecuzione: {self.run_id} ---\n")
+            f.write(f"Timestamp Esecuzione: {time.ctime()}\n")
+            f.write(f"File di Configurazione: {self.yaml_path}\n")
+            f.write(f"Totale Frame Processati (con Altitudine > 0.1m): {self.total_frames_with_alt}\n\n")
+            f.write("--- Prestazioni Stima Altitudine ---\n")
+            f.write(f"Errore Assoluto Medio (MAE) sull'Altitudine: {mean_alt_error:.4f} m\n")
+            f.write(f"Errore Relativo Medio (MRE) sull'Altitudine: {mean_rel_error * 100:.2f} %\n")
             f.write("-------------------------------------\n")
-            f.write("\nConfiguration:\n")
-            # Add a brief configuration summary
+            f.write("\nConfigurazione:\n")
+            # Aggiungi un piccolo riepilogo della configurazione
             f.write(f"Slicing: {self.slicing_type} (dt_ms: {self.fixed_dt_ms})\n")
             
-        print(f"Summary log saved at: {log_path}")
+        print(f"Log di riepilogo salvato in: {log_path}")
 
     def _plot_flow_and_imu(self):
-        """Generate the plot of Optical Flow (RAW vs DEROTATED) and Gyro."""
+        """Genera il plot del Flusso Ottico (RAW vs DEROTATED) e Gyro."""
         
-        if not self.log_data['frame_id']:
-            return
+        if not self.log_data['frame_id']: return
 
         frames = self.log_data['frame_id']
         
-        # IMU Data
+        # Dati IMU
         gx = np.array(self.log_data['gx_cam'])
         gy = np.array(self.log_data['gy_cam'])
         gz = np.array(self.log_data['gz_cam'])
 
-        # Pixel/s Data
-        u_raw_pixsec = np.array(self.log_data['u_pixsec_raw_mean'])
-        v_raw_pixsec = np.array(self.log_data['v_pixsec_raw_mean'])
-        u_derot_pixsec = np.array(self.log_data['u_pixsec_derot_mean'])
-        v_derot_pixsec = np.array(self.log_data['v_pixsec_derot_mean'])
+        # Dati Pixel/s
+        u_raw = np.array(self.log_data['u_pix_raw_mean'])
+        v_raw = np.array(self.log_data['v_pix_raw_mean'])
+        u_derot = np.array(self.log_data['u_pix_derot_mean'])
+        v_derot = np.array(self.log_data['v_pix_derot_mean'])
 
         fig, axes = plt.subplots(3, 1, sharex=True, figsize=(14, 12))
         
-        # --- 1. Horizontal Optical Flow (u) ---
-        axes[0].plot(frames, u_raw_pixsec, label='Flow RAW $\\bar{u}$ (px/s)', alpha=0.7)
-        axes[0].plot(frames, u_derot_pixsec, label='Flow DEROTATED $\\bar{u}$ (px/s)', color='red', linewidth=2)
-        axes[0].set_title('Horizontal Optical Flow ($u$) - RAW vs DEROTATED')
+        # --- 1. Flusso U (Pixel/sec) ---
+        axes[0].plot(frames, u_raw, label='Flow RAW $\\bar{u}$ (px/s)', alpha=0.7)
+        axes[0].plot(frames, u_derot, label='Flow DEROTATED $\\bar{u}$ (px/s)', color='red', linewidth=2)
+        axes[0].set_title('Flusso Ottico Orizzontale ($u$) - RAW vs DEROTATED')
         axes[0].set_ylabel('$u$ (px/s)')
         axes[0].grid(True, linestyle=':')
         axes[0].legend()
 
-        # --- 2. Vertical Optical Flow (v) ---
-        axes[1].plot(frames, v_raw_pixsec, label='Flow RAW $\\bar{v}$ (px/s)', alpha=0.7)
-        axes[1].plot(frames, v_derot_pixsec, label='Flow DEROTATED $\\bar{v}$ (px/s)', color='red', linewidth=2)
-        axes[1].set_title('Vertical Optical Flow ($v$) - RAW vs DEROTATED')
+        # --- 2. Flusso V (Pixel/sec) ---
+        axes[1].plot(frames, v_raw, label='Flow RAW $\\bar{v}$ (px/s)', alpha=0.7)
+        axes[1].plot(frames, v_derot, label='Flow DEROTATED $\\bar{v}$ (px/s)', color='red', linewidth=2)
+        axes[1].set_title('Flusso Ottico Verticale ($v$) - RAW vs DEROTATED')
         axes[1].set_ylabel('$v$ (px/s)')
         axes[1].grid(True, linestyle=':')
         axes[1].legend()
 
-        # --- 3. Angular Velocity (Gyro) ---
+        # --- 3. Velocità Angolare (Gyro) ---
         axes[2].plot(frames, gx, label='Gyro $G_x$ (Roll)', alpha=0.7)
         axes[2].plot(frames, gy, label='Gyro $G_y$ (Pitch)', alpha=0.7)
         axes[2].plot(frames, gz, label='Gyro $G_z$ (Yaw)', alpha=0.7)
-        axes[2].set_title('Angular Velocities (Gyro) in Camera Frame (rad/s)')
+        axes[2].set_title('Velocità Angolari (Gyro) nel Frame Telecamera (rad/s)')
         axes[2].set_xlabel('Frame ID')
-        axes[2].set_ylabel('Angular Rate (rad/s)')
+        axes[2].set_ylabel('Angoli (rad/s)')
         axes[2].grid(True, linestyle=':')
         axes[2].legend()
 
@@ -967,107 +928,56 @@ class VisionNodeUZHFPVEventsPlayback:
         plot_path = os.path.join(self.results_dir, f"{self.run_id}_flow_imu_comparison.png")
         plt.savefig(plot_path)
         plt.close(fig)
-        print(f"Flow/IMU plot saved at: {plot_path}")
-
-    def _plot_flow_components(self):
-        if not self.log_data['timestamp']:
-            print("No log data to plot.")
-            return
-
-        ts_s = np.array(self.log_data['timestamp']) * 1e-6
-        dt_ms = np.array(self.log_data['dt_ms'])
-        
-        # Flow Components
-        u_raw_pixsec = np.array(self.log_data['u_pixsec_raw_mean'])
-        v_raw_pixsec = np.array(self.log_data['v_pixsec_raw_mean'])
-        u_derot_pixsec = np.array(self.log_data['u_pixsec_derot_mean'])
-        v_derot_pixsec = np.array(self.log_data['v_pixsec_derot_mean'])
-        
-        # Magnitudes
-        mag_raw = np.array(self.log_data['mag_raw_mean'])
-        mag_derot = np.array(self.log_data['mag_derot_mean'])
-
-        filtered_count = np.array(self.log_data['filtered_vectors_count'])
-        
-        # Configurazione plot
-        fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
-        
-        # --- SUBPLOT 1: Optical Flow Medio (Pixel/s) ---
-        axes[0].plot(ts_s, u_raw_pixsec, label='RAW U (px/s)', color='red', alpha=0.7)
-        axes[0].plot(ts_s, v_raw_pixsec, label='RAW V (px/s)', color='red', linestyle='--', alpha=0.7)
-        axes[0].plot(ts_s, u_derot_pixsec, label='DEROTATED U (px/s)', color='blue')
-        axes[0].plot(ts_s, v_derot_pixsec, label='DEROTATED V (px/s)', color='blue', linestyle='--')
-        
-        axes[0].set_title('Optical Flow Medio (RAW vs. DEROTATED)')
-        axes[0].set_ylabel('Flow (Pixel/s)')
-        axes[0].grid(True, linestyle=':', alpha=0.6)
-        axes[0].legend(loc='upper right')
-        
-        # --- SUBPLOT 2: Delta T (ms) ---
-        axes[1].plot(ts_s, dt_ms, label='Frame $\Delta t$', color='green')
-        axes[1].set_title('Intervallo di Tempo tra Frame ($\Delta t$)')
-        axes[1].set_ylabel('$\Delta t$ (ms)')
-        axes[1].grid(True, linestyle=':', alpha=0.6)
-        axes[1].legend(loc='upper right')
-
-        # --- SUBPLOT 3: Conteggio Vettori Filtrati ---
-        axes[2].plot(ts_s, filtered_count, label='Vettori Filtrati', color='purple')
-        axes[2].set_title('Numero di Vettori di Flow Filtrati')
-        axes[2].set_xlabel('Tempo (s)')
-        axes[2].set_ylabel('Conteggio')
-        axes[2].grid(True, linestyle=':', alpha=0.6)
-        axes[2].legend(loc='upper right')
-        
-        # Stampa i plot
-        plt.tight_layout()
-        plot_path = os.path.join(self.results_dir, "flow_diagnostics.png")
-        plt.savefig(plot_path)
-        print(f"Flow diagnostics plot saved to {plot_path}")
-        # plt.show() # Rimuovilo se non vuoi che blocchi l'esecuzione
-
-        # --- DIAGNOSI MAGNITUDINI ROTATION ---
-        # Aggiungo un plot separato per il tuo debug sui vettori derotati vs rotazionali
-        fig_mag, ax_mag = plt.subplots(1, 1, figsize=(12, 4))
-        ax_mag.plot(ts_s, mag_raw, label='RAW Magnitude', color='red')
-        ax_mag.plot(ts_s, mag_derot, label='DEROTATED Magnitude', color='blue')
-        ax_mag.set_title('Diagnostica Magnitudini Flow Normalizzate ($\|P''\|, \|\mathbf{RotOF}\|, \|\mathbf{P}_{\text{derot}}\|$)')
-        ax_mag.set_xlabel('Tempo (s)')
-        ax_mag.set_ylabel('Magnitudine (Unità Normalizzate)')
-        ax_mag.grid(True, linestyle=':', alpha=0.6)
-        ax_mag.legend(loc='upper right')
-        
-        plot_path_mag = os.path.join(self.results_dir, "magnitude_diagnostics.png")
-        plt.savefig(plot_path_mag)
-        print(f"Magnitude diagnostics plot saved to {plot_path_mag}")
-        # plt.show()
-
+        print(f"Plot Flow/IMU salvato in: {plot_path}")
 
     def _plot_altitude(self):
-        """Generate the plot of altitude estimates vs Ground Truth."""
+        """Genera due plot stacked: Altitudine e Angoli Roll/Pitch."""
         
         if not self.log_data['frame_id']:
             return
 
-        frames = self.log_data['frame_id']
-        gt_alt = np.array(self.log_data['gt_alt'])
-        raw_alt = np.array(self.log_data['raw_alt'])
+        frames = np.array(self.log_data['frame_id'])
+
+        gt_alt      = np.array(self.log_data['gt_alt'])
+        raw_alt     = np.array(self.log_data['raw_alt'])
         filtered_alt = np.array(self.log_data['filtered_alt'])
 
-        fig, ax = plt.subplots(figsize=(14, 6))
-        
-        # --- Altitude ---
-        ax.plot(frames, gt_alt, label='Ground Truth $Z_{GT}$', color='green', linewidth=3, linestyle='--')
-        ax.plot(frames, raw_alt, label='Raw Altitude $H_{RAW}$ (Before Filter)', alpha=0.6, linestyle=':')
-        ax.plot(frames, filtered_alt, label='Filtered Altitude $H_{FILT}$', color='red', linewidth=2)
-        
-        ax.set_title('Altitude Estimation vs Ground Truth')
-        ax.set_xlabel('Frame ID')
-        ax.set_ylabel('Altitude (meters)')
-        ax.grid(True, linestyle=':')
-        ax.legend()
+        roll_deg  = np.array(self.log_data.get('roll_deg', []))
+        pitch_deg = np.array(self.log_data.get('pitch_deg', []))
+
+        fig, axes = plt.subplots(2, 1, sharex=True, figsize=(14, 10))
+
+        # =====================
+        # 1) ALTITUDE PLOT
+        # =====================
+        axes[0].plot(frames, gt_alt, label='Ground Truth $Z_{GT}$', color='green', linewidth=3, linestyle='--')
+        axes[0].plot(frames, raw_alt, label='Raw Altitude $H_{RAW}$', alpha=0.6, linestyle=':')
+        axes[0].plot(frames, filtered_alt, label='Filtered Altitude $H_{FILT}$', color='red', linewidth=2)
+
+        axes[0].set_title('Altitude Estimation vs Ground Truth')
+        axes[0].set_ylabel('Altitude (m)')
+        axes[0].grid(True, linestyle=':')
+        axes[0].legend()
+
+        # =====================
+        # 2) ROLL & PITCH PLOT
+        # =====================
+        if len(roll_deg) == len(frames):
+            axes[1].plot(frames, roll_deg, label='Roll (deg)', color='blue')
+            axes[1].plot(frames, pitch_deg, label='Pitch (deg)', color='orange')
+
+            axes[1].set_title('Attitude Evolution: Roll & Pitch')
+            axes[1].set_xlabel('Frame Index')
+            axes[1].set_ylabel('Degrees (°)')
+            axes[1].grid(True, linestyle=':')
+            axes[1].legend()
+        else:
+            axes[1].text(0.5, 0.5, "No Roll/Pitch logged", ha='center', va='center')
 
         plt.tight_layout()
-        plot_path = os.path.join(self.results_dir, f"{self.run_id}_altitude_estimation.png")
+
+        plot_path = os.path.join(self.results_dir, f"{self.run_id}_altitude_attitude.png")
         plt.savefig(plot_path)
         plt.close(fig)
-        print(f"Altitude plot saved at: {plot_path}")
+
+        print(f"Plot Altitude + Attitude salvato in: {plot_path}")
