@@ -143,6 +143,8 @@ class VisionNodeUZHFPVEventsPlayback:
         # load config
         self._loadParametersFromYAML(yaml_path)
 
+        print(self.config)
+
         # event-related config
         events_cfg = self.config["EVENTS"]
         self.events_dir = events_cfg["scene"]
@@ -343,6 +345,9 @@ class VisionNodeUZHFPVEventsPlayback:
         
         # Calcola dt_ms (tempo tra frame attuali e precedente per il log)
         dt_ms = (t_us - self.prev_t_us) / 1000.0 if self.frameID > 0 else self.deltaTms
+        self.deltaTms = dt_ms
+        self.fps = 1000.0 / self.deltaTms
+        
         self.prev_t_us = t_us
 
         # 1. IMU (Gyro) extraction
@@ -636,7 +641,7 @@ class VisionNodeUZHFPVEventsPlayback:
             if self.currPoints is not None:
                 for i in range(len(self.currPoints)):
                     if self.status[i] == 1:
-                        fv = OFVectorFrame(self.prevPoints[i], self.currPoints[i], 1000.0 / self.deltaTms, self.camParams)
+                        fv = OFVectorFrame(self.prevPoints[i], self.currPoints[i], self.fps, self.camParams)
                         self.flowVectors.append(fv)
             
             self.filteredFlowVectors = rejectOutliersFrame(self.flowVectors, self.magnitudeThresholdPixel, self.boundThreshold)
@@ -660,90 +665,72 @@ class VisionNodeUZHFPVEventsPlayback:
                 print(f"Optical Flow - Avg U Raw: {avg_u_raw:.3f} px/s, Avg V Raw: {avg_v_raw:.3f} px/s")
                 print(f"Optical Flow - Avg U Derotated: {avg_u_derot:.3f} px/s, Avg V Derotated: {avg_v_derot:.3f} px/s")
 
-                
-    def _applyDerotation3D_events(self, flowVectors, gyro_cam):
-        
-        # --- 1. Calcolo di Pprime_ms e Norm_a (Come in C++) ---
+
+    def _applyDerotation3D_events(self, flowVectors, gyro_cam_radsec):
+
+        """
+        Same logic you posted for applyDerotation3D(...).
+        We replicate the steps to compute a new nextPosition in 2D.
+        """
         derotatedFlowVectors = []
 
-        for ofVector in flowVectors:
-        
-            # Norm_a = norma di AMeter (vettore di profondità stimata/inversa, se presente)
-            # Assunzione: ofVector.AMeter è un array/list di 3 elementi
-            norm_a = np.linalg.norm(ofVector.AMeter)
+        for ofVector_original in flowVectors:
             
-            # Pprime_ms: Flusso RAW scalato da pixel/s a un'unità equivalente a metro/secondo
-            # Pprime_ms[0] = uPixelSec * pixelSize
-            # Pprime_ms[1] = vPixelSec * pixelSize
-            
-            # Nota: Usiamo i campi RAW originali (non uNormSec_raw)
+            ofVector_derotated = ofVector_original.clone()
+
+            #proceed with the derotation computation
+
+            norm_a = np.linalg.norm(ofVector_derotated.AMeter)
+            # Pprime_ms = [uPixelSec*pixelSize, vPixelSec*pixelSize]
             Pprime_ms = np.array([
-                ofVector.uPixelSec * ofVector.camParams.pixelSize, 
-                ofVector.vPixelSec * ofVector.camParams.pixelSize
+                ofVector_derotated.uPixelSec * self.camParams.pixelSize,
+                ofVector_derotated.vPixelSec * self.camParams.pixelSize
             ], dtype=np.float32)
-            
-            # PpPprime_ms: Pprime_ms normalizzato dalla norma del vettore A (3D)
-            if norm_a < 1e-6:
-                # Evita divisione per zero. Se norm_a è 0, i calcoli successivi sono invalidi.
-                PpPprime_ms = np.array([0.0, 0.0, 0.0])
-            else:
-                PpPprime_ms = np.array([
-                    Pprime_ms[0] / norm_a, 
-                    Pprime_ms[1] / norm_a, 
-                    0.0
-                ], dtype=np.float32)
-            
-            # --- 2. Step 1 C++: Proiezione Perpendicolare (P) ---
-            # P = PpPprime_ms - (PpPprime_ms . directionVector) * directionVector
-            
-            # ofVector.directionVector è il raggio ottico 3D (unitario) [x/d, y/d, 1/d]
-            dot_product = np.dot(PpPprime_ms, ofVector.directionVector)
-            
-            # Vettore P (non ancora derotato)
-            P = PpPprime_ms - (dot_product * ofVector.directionVector)
-            
-            
-            # --- 3. Step 2 C++: Componente Rotazionale e Sottrazione ---
-            
-            # RotOF C++: -avgGyroRadSec.cross(ofVector.directionVector)
-            # RotOF Python: -np.cross(gyro_cam, ofVector.directionVector)
-            # (Ricorda, il Python np.cross(A, B) è come il C++ A.cross(B))
-            RotOF_3D = -np.cross(gyro_cam, ofVector.directionVector)
 
-            #derotatied_vector in 3d space
-            P_derotated = P - RotOF_3D
+            # PpPprime_ms => 3D: (x, y, 0) / norm_a
+            PpPprime_ms = np.array([Pprime_ms[0]/norm_a, Pprime_ms[1]/norm_a, 0.0], dtype=np.float32)
 
-            #construct the ofvector struct with the derotated vector
+            # P = PpPprime_ms - dot(...) * directionVector
+            dot_val = np.dot(PpPprime_ms, ofVector_derotated.directionVector)
+            P = PpPprime_ms - dot_val*ofVector_derotated.directionVector
 
-            #get the new position back after derotation, in 2d space 
-            Pprime_derotated = P_derotated + (P_derotated.dot(ofVector.directionVector)) * ofVector.directionVector;
+            # RotOF = -(avgGyroRadSec cross directionVector)
+            cross_val = np.cross(gyro_cam_radsec, ofVector_derotated.directionVector)
+            RotOF = -cross_val
 
-            Pprime_derotated = Pprime_derotated - norm_a
+            ofVector_derotated.P = P - RotOF
 
-            derotated_2d_pixsecond = Pprime_derotated[0:2]  #take only x and y components
+            # getDerotatedOF_ms => next
+            OF_derotated = self.getDerotatedOF_ms(ofVector_derotated.P, ofVector_derotated.directionVector, ofVector_derotated.AMeter)
 
+            # Now in pixel space for nextPosition
+            derotNextX = ofVector_derotated.position[0] + OF_derotated[0]*self.deltaTms/(self.camParams.pixelSize*1e3)
+            derotNextY = ofVector_derotated.position[1] + OF_derotated[1]*self.deltaTms/(self.camParams.pixelSize*1e3)
+            ofVector_derotated.nextPosition = (derotNextX, derotNextY)
+            ofVector_derotated.deltaX = ofVector_derotated.nextPosition[0] - ofVector_derotated.position[0]
+            ofVector_derotated.deltaY = ofVector_derotated.nextPosition[1] - ofVector_derotated.position[1]
 
-            #apply back to ofVector position
-            derotated_nextPosition = ofVector.position + derotated_2d_pixsecond * self.deltaTms / 1000.0 / ofVector.camParams.pixelSize
+            derotatedFlowVectors.append(ofVector_derotated)
 
-            #create derotated OFVector data
-            derotated_vector = OFVectorFrame(ofVector.position, derotated_nextPosition, 1000.0 / self.deltaTms, self.camParams)
-
-            #write the P vector derotated in 3D space
-            derotated_vector.P = P_derotated
-
-            #append to output list
-            derotatedFlowVectors.append(derotated_vector)
-        
-
-        #return the list of derotated flow vectors
         return derotatedFlowVectors
 
+    def getDerotatedOF_ms(self, P_derotated, d_direction, aVector):
+        """
+        from your getDerotatedOF_ms(...) 
+        """
+        dot_val = np.dot(P_derotated, d_direction)
+        Pprime_derotated = P_derotated + dot_val*d_direction
+        scale = np.linalg.norm(aVector)
+        Pprime_derotated *= scale
+        return np.array([Pprime_derotated[0], Pprime_derotated[1]], dtype=np.float32)
+
+        
     def _get_imu(self, cam_imu_slice):
         """
         cam imu is in reality defined in the D frame in the UZH-FPV paper.
         so it is the imu on the camera, however the reference system is X-left, Y-up, Z-forward
-        return IMU on the proper CAMERA FRAME : X-right, Y-down, Z-forward
+        return IMU on the proper CAMERA FRAME : X-right, Y-down, Z-forward.
+        gyro is in rad/s
         """
 
         R_IC = np.array([

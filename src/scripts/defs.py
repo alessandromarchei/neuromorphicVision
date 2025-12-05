@@ -191,9 +191,28 @@ class OFVectorFrame:
 
         self.camParams = camParams  # Store camParams for potential reconversion
 
-        # 3d derotated vector in space (not normalized). to fill during derotation step
+        # 3d derotated vector in space (not normalized), in m/s. to fill during derotation step
         self.P = np.array([0.0, 0.0, 0.0], dtype=np.float32)
 
+    # 🔻 This is the key
+    def clone(self):
+        new = OFVectorFrame(self.position.copy(), self.nextPosition.copy(), 0.0, self.camParams)
+        # overwrite computed features so clone behaves identically
+        new.deltaX = self.deltaX
+        new.deltaY = self.deltaY
+        new.uPixelSec = self.uPixelSec
+        new.vPixelSec = self.vPixelSec
+        new.magnitudePixel = self.magnitudePixel
+
+        new.uDegSec = self.uDegSec
+        new.vDegSec = self.vDegSec
+
+        new.AMeter = self.AMeter.copy()
+        new.directionVector = self.directionVector.copy()
+
+        new.P = self.P.copy()
+        return new
+    
 # ============================================================
 # PID per Adaptive Slicing (versione Python del tuo C++)
 # ============================================================
