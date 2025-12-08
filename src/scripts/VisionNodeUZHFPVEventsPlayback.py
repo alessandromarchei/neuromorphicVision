@@ -753,13 +753,27 @@ class VisionNodeUZHFPVEventsPlayback:
             return 0.0
 
         try:
-            data = np.loadtxt(gt_file, comments="#", delimiter=" ", skiprows=1)
-            # data shape -> N x 8   (ts, px, py, pz, qx, qy, qz, qw)
+            # 1) Try whitespace split (default behaviour)
+            data = np.loadtxt(gt_file, comments="#", skiprows=1)
+        except Exception:
+            try:
+                # 2) Try comma-separated explicitly
+                data = np.loadtxt(gt_file, comments="#", delimiter=",", skiprows=1)
+            except Exception as e:
+                print(f"[ERROR] loadtxt failed (both space and comma parsing): {e}")
+                return 0.0
 
-            return float(data[0, 3])  # 4th column = pz
-        except Exception as e:
-            print(f"loadtxt failed: {e}")
+        # Validate shape
+        if data.ndim != 2 or data.shape[1] < 4:
+            print(f"[WARN] Unexpected GT format: shape={data.shape}")
             return 0.0
+
+        try:
+            return float(data[0, 3])  # column 4 = pz
+        except Exception:
+            print("[WARN] Failed to extract pz from GT")
+            return 0.0
+
 
 
     def append_log_data(self, t_us, dt_ms, gt_alt):
@@ -837,7 +851,7 @@ class VisionNodeUZHFPVEventsPlayback:
 
         # 4. Generazione dei Plot
         self._plot_flow_and_imu()
-        self._plot_altitude()
+        self._plot_altitude_dt()
 
         # 5. Salvataggio del Log di Riepilogo
         self._save_summary_log()
@@ -944,7 +958,7 @@ class VisionNodeUZHFPVEventsPlayback:
         plt.close(fig)
         print(f"Plot Flow/IMU salvato in: {plot_path}")
 
-    def plot_altitude_dt(self):
+    def _plot_altitude_dt(self):
         if not self.log_data['timestamp']:
             print("No log data to plot.")
             return

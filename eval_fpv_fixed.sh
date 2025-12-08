@@ -36,8 +36,8 @@ DATASET_NAMES=(
 )
 
 # Sweep parameters
-DT_LIST=(20 30 50)              # fixed slicing times
-COMP_FILTER_LIST=(2.0 3.0 4.0)  # complementary gains (change as needed)
+DT_LIST=(60)              # fixed slicing times
+COMP_FILTER_LIST=(4.0)  # complementary gains (change as needed)
 
 ##############################################
 #              FUNCTIONS
@@ -105,5 +105,3 @@ echo "=========================================="
 echo " FPV FIXED SLICING SWEEP COMPLETED"
 echo "=========================================="
 
-
-bash eval_fpv_adaptive.sh

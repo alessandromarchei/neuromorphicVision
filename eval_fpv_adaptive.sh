@@ -9,7 +9,7 @@ BASE_YAML="config/config_fpv_adaptive.yaml"
 TMP_DIR="tmp_fpv_adaptive"
 PY_SCRIPT="playback_fpv_evs.py"
 OUT_DIR="runs_fpv_adaptive"
-MAX_PARALLEL=1
+MAX_PARALLEL=6
 
 mkdir -p "$TMP_DIR"
 mkdir -p "$OUT_DIR"
@@ -17,28 +17,30 @@ mkdir -p "$OUT_DIR"
 # List of FPV scenes
 DATASETS=(
     "/home/alessandro/datasets/fpv/indoor_45_2_davis_with_gt/"
-    # "/home/alessandro/datasets/fpv/indoor_45_4_davis_with_gt/"
-    # "/home/alessandro/datasets/fpv/indoor_45_9_davis_with_gt/"
-    # "/home/alessandro/datasets/fpv/indoor_45_12_davis_with_gt/"
-    # "/home/alessandro/datasets/fpv/indoor_45_13_davis_with_gt/"
-    # "/home/alessandro/datasets/fpv/indoor_45_14_davis_with_gt/"
-    # "/home/alessandro/datasets/fpv/outdoor_45_1_davis_with_gt/"
+    "/home/alessandro/datasets/fpv/indoor_45_4_davis_with_gt/"
+    "/home/alessandro/datasets/fpv/indoor_45_9_davis_with_gt/"
+    "/home/alessandro/datasets/fpv/indoor_45_12_davis_with_gt/"
+    "/home/alessandro/datasets/fpv/indoor_45_13_davis_with_gt/"
+    "/home/alessandro/datasets/fpv/indoor_45_14_davis_with_gt/"
+    "/home/alessandro/datasets/fpv/outdoor_45_1_davis_with_gt/"
 )
 
 DATASET_NAMES=(
     "indoor_45_2"
-    # "indoor_45_4"
-    # "indoor_45_9"
-    # "indoor_45_12"
-    # "indoor_45_13"
-    # "indoor_45_14"
-    # "outdoor_45_1"
+    "indoor_45_4"
+    "indoor_45_9"
+    "indoor_45_12"
+    "indoor_45_13"
+    "indoor_45_14"
+    "outdoor_45_1"
 )
 
 # PI Sweep Lists (same logic of MVSEC)
 P_LIST=(0.3)
 I_LIST=(0.05)
-OFPixelSetpoint_LIST=(3 5 7 9 10)
+# OFPixelSetpoint_LIST=(3 5 7 9 10)
+# thresholdPIDEvents_LIST=(5 7 10)
+OFPixelSetpoint_LIST=(2 4 8 12)
 thresholdPIDEvents_LIST=(5 7 10)
 
 ##############################################
