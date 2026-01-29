@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 # ============================================================
 
 # iterator + util già esistenti (tuoi)
-from testing.utils.load_utils_mvsec import mvsec_evs_iterator, read_rmap, mvsec_evs_iterator_adaptive, VALID_FRAME_RANGES
+from testing.utils.load_utils_mvsec import mvsec_evs_iterator, read_rmap, mvsec_evs_iterator_adaptive, VALID_FRAME_RANGES, mvsec_evs_iterator_adaptive_abmof
 from testing.utils.event_utils import to_event_frame
 from testing.utils.viz_utils import visualize_image, visualize_gt_flow, visualize_filtered_flow
 from testing.utils.loss import compute_AEE
@@ -28,6 +28,7 @@ from src.scripts.defs import (
     CameraParams,
     LKParams,
     AdaptiveSlicerPID,
+    AdaptiveSlicerABMOF,
     OFVectorFrame
 )
 
@@ -121,20 +122,23 @@ class VisionNodeEventsPlayback:
         print(f"[VisionNodeEventsPlayback] use_valid_frame_range = {self.use_valid_frame_range}")
 
         # controlla se adaptive
-        self.use_adaptive = (self.slicing_type == "adaptive")
+        self.use_adaptive = (self.slicing_type == "adaptive_pid" or self.slicing_type == "adaptive_abmof")
 
         # crea PID SOLO se adaptive
-        self.adaptiveSlicer = AdaptiveSlicerPID(
-            self.config,
-            enabled=self.use_adaptive         # <--- ora dipende da SLICING.type
-        )
+        if self.slicing_type == "adaptive_pid":
+            self.adaptiveSlicer = AdaptiveSlicerPID(
+                self.config,
+                enabled=self.use_adaptive         # <--- ora dipende da SLICING.type
+            )
+        elif self.slicing_type == "adaptive_abmof":
+            self.adaptiveSlicer = AdaptiveSlicerABMOF(self.config)
 
         # fps per LK, se adaptive lo calcoliamo dinamicamente
         if self.slicing_type == "mvsec":
             self.fps = 1000.0 / 10.0       # placeholder, aggiornato da mvsec iterator
         elif self.slicing_type == "fixed":
             self.fps = 1000.0 / self.fixed_dt_ms
-        elif self.slicing_type == "adaptive":
+        elif self.slicing_type == "adaptive_pid" or self.slicing_type == "adaptive_abmof":
             self.fps = 1000.0 / self.adaptiveSlicer.initial_dt_ms
 
         self.deltaTms = 1000.0 / self.fps
@@ -344,8 +348,11 @@ class VisionNodeEventsPlayback:
         if self.slicing_type == "mvsec" or self.slicing_type == "fixed":
             self._run_fixed_slicing()
 
-        elif self.slicing_type == "adaptive":
-            self._run_adaptive_slicing()
+        elif self.slicing_type == "adaptive_pid":
+            self._run_adaptive_slicing_pid()
+        
+        elif self.slicing_type == "adaptive_abmof":
+            self._run_adaptive_slicing_abmof()
 
         else:
             raise ValueError(f"Unknown slicing type: {self.slicing_type}")
@@ -382,7 +389,7 @@ class VisionNodeEventsPlayback:
     # --------------------------------------------------------
     # RUN: adaptive slicing con PID
     # --------------------------------------------------------
-    def _run_adaptive_slicing(self):
+    def _run_adaptive_slicing_pid(self):
         print("[VisionNode] Running ADAPTIVE slicing with unified iterator")
 
         iterator = mvsec_evs_iterator_adaptive(
@@ -429,6 +436,46 @@ class VisionNodeEventsPlayback:
                         print(f"[ABMOF] areaEventThr → {self.adaptiveSlicer.areaEventThr}")
 
             self.frameID += 1
+
+    def _run_adaptive_slicing_abmof(self):
+        print("[VisionNode] Running ABMOF adaptive slicing")
+
+        iterator = mvsec_evs_iterator_adaptive_abmof(
+            self.events_dir,
+            side=self.side,
+            adaptive_slicer=self.adaptiveSlicer,
+            H=self.H,
+            W=self.W,
+            rectify=self.rectify,
+            gt_mode=self.gt_mode,
+            use_valid_frame_range=self.use_valid_frame_range
+        )
+
+        for (event_frame,
+            t_us,
+            dt_ms,
+            flow_map,
+            ts_gt,
+            dt_gt_ms,
+            flow_id,
+            in_valid_range) in iterator:
+
+            self.deltaTms = dt_ms
+            self.current_gt_flow = flow_map
+            self.current_gt_ts_us = ts_gt
+            self.dt_gt_flow_ms = dt_gt_ms
+            self.current_flow_gt_id = flow_id
+
+            self._processEventFrame(event_frame, t_us)
+
+            if in_valid_range:
+                updated = self.adaptiveSlicer.feedback(self.filteredFlowVectors)
+                if updated:
+                    print(f"[ABMOF] areaEventThr → {self.adaptiveSlicer.areaEventThr}")
+
+            self.frameID += 1
+
+
 
 
     # --------------------------------------------------------

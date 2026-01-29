@@ -276,129 +276,117 @@ class AdaptiveSlicerPID:
 
 
 
+
 class AdaptiveSlicerABMOF:
     """
-    Adaptive slicer inspired by Liu & Delbrück (2018) ABMOF.
-    Controls event-density threshold (areaEventThr), NOT time.
+    Reference-faithful ABMOF adaptive slicer.
+
+    Differences vs original:
+    - Optical flow is external (LK instead of SAD blocks)
+    Everything else is IDENTICAL in logic.
     """
 
-    def __init__(self, cfg: dict, enabled: bool):
-        self.enabled = enabled
+    def __init__(self, config):
 
-        ad = cfg["adaptiveSlicingABMOF"]
+        self.h = config["EVENTS"]["H"]
+        self.w = config["EVENTS"]["W"]
 
-        # Spatial layout
-        #from https://github.com/wzygzlm/abmof_libcaer.git
-        #the area size = width/8
+        cfg = config["SLICING"]["ABMOF"]
 
-        self.H = cfg["EVENTS"].get("H", 260)
-        self.W = cfg["EVENTS"].get("W", 346)
-        self.area_size = self.W // 8
+        # ---- Threshold ----
+        self.areaEventThr = int(cfg.get("areaEventThr_init", 1000))
+        self.areaEventThr_min = int(cfg.get("areaEventThr_min", 100))
+        self.areaEventThr_max = int(cfg.get("areaEventThr_max", 1000))
 
-        self.grid_h = self.H // self.area_size
-        self.grid_w = self.W // self.area_size
+        # ---- Paper constant: 3/64 ≈ 4.7% ----
+        self.step_ratio = cfg.get("step_ratio", 0.05)
 
-        # Threshold control
-        self.areaEventThr = ad.get("initialAreaEventThr", 1000)
-        self.minThr = ad.get("minAreaEventThr", 100)
-        self.maxThr = ad.get("maxAreaEventThr", 1000)
-        self.stepThr_factor = ad.get("AreaEventThr_incrase_factor", 0.05)      # 5% step, as from paper
+        # ---- Grid ----
+        self.area_number = int(cfg.get("area_number", 8))
+        self.cell_w = self.w // self.area_number
+        self.cell_h = self.cell_w
 
-        # OF histogram
-        self.search_radius = ad.get("searchRadius", 3)
-        r = self.search_radius
-        self.ofHist = np.zeros((2*r+1, 2*r+1), dtype=np.int32)
+        self.grid_cols = self.area_number
+        self.grid_rows = self.h // self.cell_h
 
-        # Internal state
-        self.slice_rotated = False
+        self.radius = int(cfg.get("radius", 3))     #radius used for the matching distance and the clipping of OF vectors
 
-        self.reset_area_counters()
+        self.reset_slice()
+
+        # OF histogram (equivalent to OFRetRegsSW)
+        self.of_hist = np.zeros((7, 7), dtype=np.int32)
 
     # --------------------------------------------------
-    # AREA EVENT SLICING
+    def reset_slice(self):
+        self.area_counters = np.zeros(
+            (self.grid_rows, self.grid_cols), dtype=np.int32
+        )
+
     # --------------------------------------------------
-    def reset_area_counters(self):
-        self.areaCounters = np.zeros((self.grid_h, self.grid_w), dtype=np.int32)
+    def update_with_events(self, xs, ys):
+        for x, y in zip(xs, ys):
+            i = int(y // self.cell_h)
+            j = int(x // self.cell_w)
+            if 0 <= i < self.grid_rows and 0 <= j < self.grid_cols:
+                self.area_counters[i, j] += 1
 
-    def accumulate_event(self, x, y):
-        """
-        Called per event.
-        Returns True if slice should rotate.
-        """
-        gx = x // self.area_size
-        gy = y // self.area_size
+    # --------------------------------------------------
+    def should_close_slice(self):
+        return self.area_counters.max() >= self.areaEventThr
 
-        if gx < 0 or gx >= self.grid_w or gy < 0 or gy >= self.grid_h:
+    # --------------------------------------------------
+    def feedback(self, filtered_flow_vectors, rotate_flag):
+        """
+        Feedback is applied ONLY when a slice is closed.
+        """
+
+        if not rotate_flag:
             return False
 
-        self.areaCounters[gy, gx] += 1
+        # build OF histogram (radius-based)
+        for v in filtered_flow_vectors:
+            dx = int(np.clip(round(v.deltaX), -self.radius, self.radius))
+            dy = int(np.clip(round(v.deltaY), -self.radius, self.radius))
+            self.of_hist[dx + self.radius, dy + self.radius] += 1
 
-        if self.areaCounters[gy, gx] >= self.areaEventThr:
-            self.slice_rotated = True
-            return True
-
-        return False
-
-    # --------------------------------------------------
-    # OPTICAL FLOW FEEDBACK
-    # --------------------------------------------------
-    def update_with_flow(self, flow_vectors):
-        """
-        Accumulate OF histogram (called once per slice).
-        """
-        if not self.enabled or len(flow_vectors) == 0:
-            return
-
-        r = self.search_radius
-
-        for fv in flow_vectors:
-            dx = int(np.round(fv.deltaX_derot))
-            dy = int(np.round(fv.deltaY_derot))
-
-            dx = np.clip(dx, -r, r)
-            dy = np.clip(dy, -r, r)
-
-            self.ofHist[dy + r, dx + r] += 1
-
-    def feedback(self):
-        """
-        Update areaEventThr based on OF histogram.
-        """
-        if not self.enabled:
+        count_sum = self.of_hist.sum()
+        if count_sum < 10:
+            self.of_hist.fill(0)
             return False
 
-        hist = self.ofHist
-        if hist.sum() < 10:
-            self._reset_feedback()
-            return False
+        # compute avg match radius
+        radius_count_sum = 0.0
+        radius_sum = 0.0
+        hist_count = 0
 
-        r = self.search_radius
-        ys, xs = np.mgrid[-r:r+1, -r:r+1]
+        for dx in range(-self.radius, self.radius + 1):
+            for dy in range(-self.radius, self.radius + 1):
+                r = dx * dx + dy * dy
+                c = self.of_hist[dx + self.radius, dy + self.radius]
+                radius_count_sum += r * c
+                radius_sum += r
+                hist_count += 1
 
-        radius_sq = xs**2 + ys**2
+        avg_match_dist = radius_count_sum / count_sum
 
-        avgMatchDistance = np.sum(radius_sq * hist) / hist.sum()
-        avgTargetDistance = np.mean(radius_sq)
+        #paper mentions avg target dist = r/2
+        avg_target_dist = self.radius / 2.0
+        #avg_target_dist = radius_sum / hist_count #this is instead used from the paper
 
-        updated = False
+        old_thr = self.areaEventThr
 
-        if avgMatchDistance > avgTargetDistance:
-            # Too much motion → slice too long → reduce threshold
-            self.areaEventThr -= self.stepThr_factor * self.areaEventThr
-            updated = True
-        else:
-            # Too little motion → slice too short → increase threshold
-            self.areaEventThr += self.stepThr_factor * self.areaEventThr
-            updated = True
+        #increase or decrase threshold by 5%
+        if avg_match_dist > avg_target_dist:
+            self.areaEventThr = int(self.areaEventThr * (1.0 - self.step_ratio))
+        elif avg_match_dist < avg_target_dist:
+            self.areaEventThr = int(self.areaEventThr * (1.0 + self.step_ratio))
 
-        self.areaEventThr = int(np.clip(
-            self.areaEventThr, self.minThr, self.maxThr
-        ))
+        # saturation
+        self.areaEventThr = int(
+            np.clip(self.areaEventThr,
+                    self.areaEventThr_min,
+                    self.areaEventThr_max)
+        )
 
-        self._reset_feedback()
-        return updated
-
-    def _reset_feedback(self):
-        self.ofHist[:] = 0
-        self.reset_area_counters()
-        self.slice_rotated = False
+        self.of_hist.fill(0)
+        return self.areaEventThr != old_thr

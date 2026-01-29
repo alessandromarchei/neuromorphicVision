@@ -748,3 +748,130 @@ def plot_timeline_two_series(img_ts_us, flow_ts_us, out_path=None, title="Timest
         print(f"[TIMELINE] Saved timeline plot to {out_path}")
 
     plt.close()
+
+
+
+def mvsec_evs_iterator_adaptive_abmof(
+    scenedir,
+    side,
+    adaptive_slicer,          # AdaptiveSlicerABMOF
+    H=260,
+    W=346,
+    rectify=True,
+    gt_mode="dt1",
+    batch_events=500_000,
+    use_valid_frame_range=False,
+):
+    print("[MVSEC-ABMOF] Starting ABMOF adaptive iterator")
+
+    # ---------------------------------------------------------
+    # Load events
+    # ---------------------------------------------------------
+    h5_main = glob.glob(os.path.join(scenedir, "*_data.hdf5"))
+    assert len(h5_main) == 1
+    f_ev = h5py.File(h5_main[0], "r")
+
+    evs = f_ev[f"davis/{side}/events"]
+    N = evs.shape[0]
+
+    rectify_map = None
+    if rectify:
+        rectify_map = read_rmap(
+            os.path.join(scenedir, f"rectify_map_{side}.h5"),
+            H=H, W=W
+        )
+
+    # ---------------------------------------------------------
+    # Load GT flow (same as your existing code)
+    # ---------------------------------------------------------
+    h5_dt = glob.glob(os.path.join(scenedir, "*dt.h5"))
+    assert len(h5_dt) == 1
+    f_gt = h5py.File(h5_dt[0], "r")
+
+    dt = 1 if gt_mode == "dt1" else 4
+    group = f_gt[f"flow/dt={dt}"]
+
+    flow_keys = sorted([k for k in group.keys() if k != "timestamps"])
+    flow_dset = [group[k] for k in flow_keys]
+
+    ts_pairs = group["timestamps"][:]
+    flow_ts_us = (ts_pairs[:, 1] * 1e6).astype(np.int64)
+
+    # ---------------------------------------------------------
+    # Streaming loop
+    # ---------------------------------------------------------
+    slice_x, slice_y, slice_p, slice_t = [], [], [], []
+    t0_us = None
+    idx = 0
+
+    while idx < N:
+        batch = evs[idx: idx + batch_events]
+        idx += batch_events
+
+        for e in batch:
+            x, y = int(e[0]), int(e[1])
+            t_us = int(e[2] * 1e6)
+            p = int(e[3])
+
+            if t0_us is None:
+                t0_us = t_us
+
+            # rectify
+            if rectify:
+                rx, ry = rectify_map[y, x]
+            else:
+                rx, ry = x, y
+
+            slice_x.append(rx)
+            slice_y.append(ry)
+            slice_p.append(p)
+            slice_t.append(t_us)
+
+            adaptive_slicer.update_with_events([rx], [ry])
+
+            # ---------- ABMOF TRIGGER ----------
+            if adaptive_slicer.should_close_slice():
+                t1_us = t_us
+                dt_ms = (t1_us - t0_us) * 1e-3
+
+                event_frame = to_event_frame(
+                    np.array(slice_x),
+                    np.array(slice_y),
+                    np.array(slice_p),
+                    H, W
+                )
+
+                # load GT
+                gt_idx = np.searchsorted(flow_ts_us, t1_us, side="left")
+                gt_idx = np.clip(gt_idx, 0, len(flow_dset) - 1)
+
+                flow_map = flow_dset[gt_idx][...]
+                if flow_map.shape[2] == 2:
+                    flow_map = flow_map.transpose(2, 0, 1)
+
+                ts_gt_us = flow_ts_us[gt_idx]
+                dt_gt_ms = None
+                if gt_idx > 0:
+                    dt_gt_ms = (flow_ts_us[gt_idx] - flow_ts_us[gt_idx - 1]) * 1e-3
+
+                yield (
+                    event_frame,
+                    t0_us,
+                    dt_ms,
+                    flow_map,
+                    ts_gt_us,
+                    dt_gt_ms,
+                    gt_idx,
+                    True
+                )
+
+                # reset slice
+                slice_x.clear()
+                slice_y.clear()
+                slice_p.clear()
+                slice_t.clear()
+                adaptive_slicer.reset_slice()
+                t0_us = None
+
+    f_ev.close()
+    f_gt.close()
