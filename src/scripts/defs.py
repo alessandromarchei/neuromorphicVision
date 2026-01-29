@@ -274,3 +274,131 @@ class AdaptiveSlicerPID:
 
         return self.adaptiveTimeWindow, updateTimingWindow
 
+
+
+class AdaptiveSlicerABMOF:
+    """
+    Adaptive slicer inspired by Liu & Delbrück (2018) ABMOF.
+    Controls event-density threshold (areaEventThr), NOT time.
+    """
+
+    def __init__(self, cfg: dict, enabled: bool):
+        self.enabled = enabled
+
+        ad = cfg["adaptiveSlicingABMOF"]
+
+        # Spatial layout
+        #from https://github.com/wzygzlm/abmof_libcaer.git
+        #the area size = width/8
+
+        self.H = cfg["EVENTS"].get("H", 260)
+        self.W = cfg["EVENTS"].get("W", 346)
+        self.area_size = self.W // 8
+
+        self.grid_h = self.H // self.area_size
+        self.grid_w = self.W // self.area_size
+
+        # Threshold control
+        self.areaEventThr = ad.get("initialAreaEventThr", 1000)
+        self.minThr = ad.get("minAreaEventThr", 100)
+        self.maxThr = ad.get("maxAreaEventThr", 1000)
+        self.stepThr_factor = ad.get("AreaEventThr_incrase_factor", 0.05)      # 5% step, as from paper
+
+        # OF histogram
+        self.search_radius = ad.get("searchRadius", 3)
+        r = self.search_radius
+        self.ofHist = np.zeros((2*r+1, 2*r+1), dtype=np.int32)
+
+        # Internal state
+        self.slice_rotated = False
+
+        self.reset_area_counters()
+
+    # --------------------------------------------------
+    # AREA EVENT SLICING
+    # --------------------------------------------------
+    def reset_area_counters(self):
+        self.areaCounters = np.zeros((self.grid_h, self.grid_w), dtype=np.int32)
+
+    def accumulate_event(self, x, y):
+        """
+        Called per event.
+        Returns True if slice should rotate.
+        """
+        gx = x // self.area_size
+        gy = y // self.area_size
+
+        if gx < 0 or gx >= self.grid_w or gy < 0 or gy >= self.grid_h:
+            return False
+
+        self.areaCounters[gy, gx] += 1
+
+        if self.areaCounters[gy, gx] >= self.areaEventThr:
+            self.slice_rotated = True
+            return True
+
+        return False
+
+    # --------------------------------------------------
+    # OPTICAL FLOW FEEDBACK
+    # --------------------------------------------------
+    def update_with_flow(self, flow_vectors):
+        """
+        Accumulate OF histogram (called once per slice).
+        """
+        if not self.enabled or len(flow_vectors) == 0:
+            return
+
+        r = self.search_radius
+
+        for fv in flow_vectors:
+            dx = int(np.round(fv.deltaX_derot))
+            dy = int(np.round(fv.deltaY_derot))
+
+            dx = np.clip(dx, -r, r)
+            dy = np.clip(dy, -r, r)
+
+            self.ofHist[dy + r, dx + r] += 1
+
+    def feedback(self):
+        """
+        Update areaEventThr based on OF histogram.
+        """
+        if not self.enabled:
+            return False
+
+        hist = self.ofHist
+        if hist.sum() < 10:
+            self._reset_feedback()
+            return False
+
+        r = self.search_radius
+        ys, xs = np.mgrid[-r:r+1, -r:r+1]
+
+        radius_sq = xs**2 + ys**2
+
+        avgMatchDistance = np.sum(radius_sq * hist) / hist.sum()
+        avgTargetDistance = np.mean(radius_sq)
+
+        updated = False
+
+        if avgMatchDistance > avgTargetDistance:
+            # Too much motion → slice too long → reduce threshold
+            self.areaEventThr -= self.stepThr_factor * self.areaEventThr
+            updated = True
+        else:
+            # Too little motion → slice too short → increase threshold
+            self.areaEventThr += self.stepThr_factor * self.areaEventThr
+            updated = True
+
+        self.areaEventThr = int(np.clip(
+            self.areaEventThr, self.minThr, self.maxThr
+        ))
+
+        self._reset_feedback()
+        return updated
+
+    def _reset_feedback(self):
+        self.ofHist[:] = 0
+        self.reset_area_counters()
+        self.slice_rotated = False

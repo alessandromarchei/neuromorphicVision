@@ -415,10 +415,18 @@ class VisionNodeEventsPlayback:
 
             # update PID based on filtered flow, 
             if in_valid_range:
-                # print(f"[Adaptive PID] inside valid frame range")
-                new_dt, updated = self.adaptiveSlicer.update(self.filteredFlowVectors)
-                if updated:
-                    print(f"[Adaptive PID] dt_\ms updated → {new_dt:.2f}")
+
+                if self.adaptiveSlicer_type == "PID":
+                    # print(f"[Adaptive PID] inside valid frame range")
+                    new_dt, updated = self.adaptiveSlicer.update(self.filteredFlowVectors)
+                    if updated:
+                        print(f"[Adaptive PID] dt_\ms updated → {new_dt:.2f}")
+
+                elif self.adaptiveSlicer_type == "ABMOF":
+                    self.adaptiveSlicer.update_with_flow(self.filteredFlowVectors)
+                    updated = self.adaptiveSlicer.feedback()
+                    if updated:
+                        print(f"[ABMOF] areaEventThr → {self.adaptiveSlicer.areaEventThr}")
 
             self.frameID += 1
 
