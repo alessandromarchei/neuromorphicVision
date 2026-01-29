@@ -1,4 +1,4 @@
-from scripts.VisionNodeMVSECEventsPlayback import VisionNodeEventsPlayback
+from src.scripts.VisionNodeMVSECEventsPlayback import VisionNodeEventsPlayback
 import argparse
 import os
 import numpy as np

@@ -118,6 +118,7 @@ class VisionNodeEventsPlayback:
         self.slicing_type = self.config["SLICING"]["type"]
         self.fixed_dt_ms  = self.config["SLICING"].get("dt_ms", None) if self.slicing_type == "fixed" else None
 
+        print(f"[VisionNodeEventsPlayback] Configs : {self.config}")
         self.use_valid_frame_range = events_cfg.get("use_valid_frame_range", False)
         print(f"[VisionNodeEventsPlayback] use_valid_frame_range = {self.use_valid_frame_range}")
 
@@ -126,11 +127,13 @@ class VisionNodeEventsPlayback:
 
         # crea PID SOLO se adaptive
         if self.slicing_type == "adaptive_pid":
+            print("[VisionNodeEventsPlayback] Using PID adaptive slicer.")
             self.adaptiveSlicer = AdaptiveSlicerPID(
                 self.config,
                 enabled=self.use_adaptive         # <--- ora dipende da SLICING.type
             )
         elif self.slicing_type == "adaptive_abmof":
+            print("[VisionNodeEventsPlayback] Using ABMOF adaptive slicer.")
             self.adaptiveSlicer = AdaptiveSlicerABMOF(self.config)
 
         # fps per LK, se adaptive lo calcoliamo dinamicamente
@@ -472,6 +475,7 @@ class VisionNodeEventsPlayback:
                 updated = self.adaptiveSlicer.feedback(self.filteredFlowVectors)
                 if updated:
                     print(f"[ABMOF] areaEventThr → {self.adaptiveSlicer.areaEventThr}")
+                    print(f"[ABMOF] dt_ms → {self.deltaTms:.2f} ms")
 
             self.frameID += 1
 

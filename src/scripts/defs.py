@@ -288,10 +288,36 @@ class AdaptiveSlicerABMOF:
 
     def __init__(self, config):
 
+        slicer_cfg = config["SLICING"]
+
+        if "mvsec" in config["EVENTS"]["scene"].lower():
+            self.initial_dt = slicer_cfg.get("gt_mode", "dt1")   # dt iniziale
+
+            if self.initial_dt == "dt1" :
+                if "outdoor" in config["EVENTS"]["scene"]:
+                    # outdoor: 21.941 ms → 45 hz
+                    # indoor: 31.859 ms → ~31 hz     
+                    self.initial_dt_ms = 22.0
+                else:
+                    self.initial_dt_ms = 32.0
+            elif self.initial_dt == "dt4":
+                if "outdoor" in config["EVENTS"]["scene"]:
+                    # outdoor: 87.764 ms → ~11.4 hz
+                    # indoor: 127.436 ms → ~7.85 hz
+                    self.initial_dt_ms = 88.0
+                else:
+                    self.initial_dt_ms = 127.0
+
+        elif "fpv" in config["EVENTS"]["scene"].lower():
+            self.initial_dt_ms = 33.0  # 30 fps initial guess for FPV scenes
+        else:
+            self.initial_dt_ms = 33.0  # default fallback
+
+
         self.h = config["EVENTS"]["H"]
         self.w = config["EVENTS"]["W"]
 
-        cfg = config["SLICING"]["ABMOF"]
+        cfg = config["ABMOF"]
 
         # ---- Threshold ----
         self.areaEventThr = int(cfg.get("areaEventThr_init", 1000))
@@ -314,7 +340,7 @@ class AdaptiveSlicerABMOF:
         self.reset_slice()
 
         # OF histogram (equivalent to OFRetRegsSW)
-        self.of_hist = np.zeros((7, 7), dtype=np.int32)
+        self.of_hist = np.zeros((self.radius*2 + 1, self.radius*2 + 1), dtype=np.int32)
 
     # --------------------------------------------------
     def reset_slice(self):
@@ -335,13 +361,13 @@ class AdaptiveSlicerABMOF:
         return self.area_counters.max() >= self.areaEventThr
 
     # --------------------------------------------------
-    def feedback(self, filtered_flow_vectors, rotate_flag):
+    def feedback(self, filtered_flow_vectors, rotate_flag=True):
         """
         Feedback is applied ONLY when a slice is closed.
         """
 
-        if not rotate_flag:
-            return False
+        # if not rotate_flag:
+        #     return False
 
         # build OF histogram (radius-based)
         for v in filtered_flow_vectors:
@@ -378,8 +404,10 @@ class AdaptiveSlicerABMOF:
         #increase or decrase threshold by 5%
         if avg_match_dist > avg_target_dist:
             self.areaEventThr = int(self.areaEventThr * (1.0 - self.step_ratio))
+            print(f"[ABMOF Slicer] Decreasing areaEventThr to {self.areaEventThr} (avg_match_dist={avg_match_dist:.2f} > avg_target_dist={avg_target_dist:.2f})")
         elif avg_match_dist < avg_target_dist:
             self.areaEventThr = int(self.areaEventThr * (1.0 + self.step_ratio))
+            print(f"[ABMOF Slicer] Increasing areaEventThr to {self.areaEventThr} (avg_match_dist={avg_match_dist:.2f} < avg_target_dist={avg_target_dist:.2f})")
 
         # saturation
         self.areaEventThr = int(
