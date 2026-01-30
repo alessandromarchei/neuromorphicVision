@@ -9,7 +9,7 @@ BASE_YAML="config/config_mvsec_abmof.yaml"
 TMP_DIR="tmp_mvsec_abmof"
 PY_SCRIPT="playback_mvsec_evs.py"
 OUT_DIR="runs_mvsec_abmof"
-MAX_PARALLEL=4
+MAX_PARALLEL=2
 
 mkdir -p "$TMP_DIR"
 mkdir -p "$OUT_DIR"
@@ -17,17 +17,17 @@ mkdir -p "$OUT_DIR"
 # List of MVSEC scenes
 # Dataset list
 DATASETS=(
-    "/home/alessandro/datasets/mvsec/indoor_flying/indoor_flying1_data/"
-    "/home/alessandro/datasets/mvsec/indoor_flying/indoor_flying2_data/"
-    "/home/alessandro/datasets/mvsec/indoor_flying/indoor_flying3_data/"
+    # "/home/alessandro/datasets/mvsec/indoor_flying/indoor_flying1_data/"
+    # "/home/alessandro/datasets/mvsec/indoor_flying/indoor_flying2_data/"
+    # "/home/alessandro/datasets/mvsec/indoor_flying/indoor_flying3_data/"
     "/home/alessandro/datasets/mvsec/outdoor_day1/"
 )
 
 # Just labels for run IDs
 DATASET_NAMES=(
-    "indoor1"
-    "indoor2"
-    "indoor3"
+    # "indoor1"
+    # "indoor2"
+    # "indoor3"
     "outdoor1"
 )
 
@@ -47,7 +47,7 @@ DATASET_NAMES=(
 
 
 # sweeping : radius
-RADIUS_LIST=(3 5 7 8 10 12)
+RADIUS_LIST=(10 12)
 
 ##############################################
 #              FUNCTIONS

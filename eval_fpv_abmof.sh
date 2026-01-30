@@ -51,7 +51,7 @@ DATASET_NAMES=(
 
 
 # sweeping : radius
-RADIUS_LIST=(3 5 7 8 10 12)
+RADIUS_LIST=(3)
 
 ##############################################
 #              FUNCTIONS
@@ -63,7 +63,7 @@ edit_yaml() {
     local radius_val="$3"
 
     sed -i "s|scene:.*|scene: \"$scene_path\"|" "$yaml_file"
-    sed -i "s|type:.*|type: \"adaptive\"|" "$yaml_file"
+    sed -i "s|type:.*|type: \"adaptive_abmof\"|" "$yaml_file"
     sed -i "s|visualizeImage:.*|visualizeImage: false|" "$yaml_file"
 
 

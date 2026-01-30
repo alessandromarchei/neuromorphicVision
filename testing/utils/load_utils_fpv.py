@@ -353,3 +353,134 @@ def fpv_evs_iterator(
 
     f_ev.close()
     print("[UZH-FPV] Done")
+
+
+
+def fpv_evs_iterator_adaptive_abmof(
+    scenedir,
+    adaptive_slicer,
+    H=260,
+    W=346,
+    rectify=False,
+    batch_events=500_000,
+    use_valid_frame_range=False,
+):
+    print("[FPV-ABMOF] Starting ABMOF adaptive iterator")
+
+    # ---------------------------------------------------------
+    # Load HDF5
+    # ---------------------------------------------------------
+    h5_main = glob.glob(os.path.join(scenedir, "*.hdf5"))
+    assert len(h5_main) == 1
+    f_ev = h5py.File(h5_main[0], "r")
+
+    evs = f_ev["cam/events"]
+    x_ds = evs["x"]
+    y_ds = evs["y"]
+    t_ds = evs["t"]
+    p_ds = evs["p"]
+    N = x_ds.shape[0]
+
+    # ---------------------------------------------------------
+    # Load IMU + GT
+    # ---------------------------------------------------------
+    cam_imu = f_ev["cam/imu"]
+    gt_state = f_ev["gt/state"]
+
+    cam_imu_ts = cam_imu["timestamp"][:]
+    gt_state_ts = gt_state["timestamp"][:]
+
+    # ---------------------------------------------------------
+    # Rectify
+    # ---------------------------------------------------------
+    rectify_map = None
+    rect_file = os.path.join(scenedir, "rectify_map.h5")
+    if rectify and os.path.exists(rect_file):
+        rectify_map = read_rmap(rect_file, H=H, W=W)
+
+    # ---------------------------------------------------------
+    # Streaming buffers
+    # ---------------------------------------------------------
+    slice_x, slice_y, slice_p, slice_t = [], [], [], []
+    t0_us = None
+
+    load_cursor = 0
+
+    def load_batch():
+        nonlocal load_cursor
+        if load_cursor >= N:
+            return None
+        end = min(load_cursor + batch_events, N)
+        batch = (
+            x_ds[load_cursor:end],
+            y_ds[load_cursor:end],
+            t_ds[load_cursor:end],
+            p_ds[load_cursor:end],
+        )
+        load_cursor = end
+        return batch
+
+    batch = load_batch()
+
+    while batch is not None:
+        bx, by, bt, bp = batch
+
+        for x, y, t_us, p in zip(bx, by, bt, bp):
+
+            if t0_us is None:
+                t0_us = int(t_us)
+
+            if rectify_map is not None:
+                rx, ry = rectify_map[int(y), int(x)]
+            else:
+                rx, ry = int(x), int(y)
+
+            slice_x.append(rx)
+            slice_y.append(ry)
+            slice_p.append(p)
+            slice_t.append(t_us)
+
+            # ---- ABMOF UPDATE WITH EVENTS ----
+            adaptive_slicer.update_with_events([rx], [ry])
+
+            # ---- TRIGGER ----
+            if adaptive_slicer.should_close_slice():
+                t1_us = int(t_us)
+                dt_ms = (t1_us - t0_us) * 1e-3
+
+                event_frame = to_event_frame(
+                    np.array(slice_x),
+                    np.array(slice_y),
+                    np.array(slice_p),
+                    H, W
+                )
+
+                cam_imu_slice = slice_group_by_time(
+                    cam_imu, cam_imu_ts, t0_us, t1_us, "timestamp"
+                )
+
+                gt_state_slice = slice_group_by_time(
+                    gt_state, gt_state_ts, t0_us, t1_us, "timestamp"
+                )
+
+                yield (
+                    event_frame,
+                    t0_us,
+                    dt_ms,
+                    cam_imu_slice,
+                    gt_state_slice,
+                    True
+                )
+
+                # reset
+                slice_x.clear()
+                slice_y.clear()
+                slice_p.clear()
+                slice_t.clear()
+                adaptive_slicer.reset_slice()
+                t0_us = None
+
+        batch = load_batch()
+
+    f_ev.close()
+    print("[FPV-ABMOF] Done")

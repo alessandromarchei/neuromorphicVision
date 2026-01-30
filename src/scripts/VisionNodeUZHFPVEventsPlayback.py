@@ -15,7 +15,7 @@ from matplotlib.gridspec import GridSpec  # <-- aggiungi questo import
 # IMPORT: adatta questi import ai tuoi file reali
 # ============================================================
 
-from testing.utils.load_utils_fpv import fpv_evs_iterator
+from testing.utils.load_utils_fpv import fpv_evs_iterator, fpv_evs_iterator_adaptive_abmof
 from testing.utils.viz_utils import visualize_image, visualize_filtered_flow
 
 # strutture dati e parametri
@@ -24,6 +24,7 @@ from src.scripts.defs import (
     CameraParams,
     LKParams,
     AdaptiveSlicerPID,
+    AdaptiveSlicerABMOF,
     OFVectorFrame
 )
 
@@ -169,15 +170,26 @@ class VisionNodeUZHFPVEventsPlayback:
         self.use_valid_frame_range = events_cfg.get("use_valid_frame_range", False)
         
         # Adaptive Slicing
-        self.use_adaptive = (self.slicing_type == "adaptive")
-        self.adaptiveSlicer = AdaptiveSlicerPID(
-            self.config,
-            enabled=self.use_adaptive
-        )
+        # controlla se adaptive
+        self.use_adaptive = (self.slicing_type == "adaptive_pid" or self.slicing_type == "adaptive_abmof")
 
-        if self.slicing_type == "fixed":
+        # crea PID SOLO se adaptive
+        if self.slicing_type == "adaptive_pid":
+            print("[VisionNodeEventsPlayback] Using PID adaptive slicer.")
+            self.adaptiveSlicer = AdaptiveSlicerPID(
+                self.config,
+                enabled=self.use_adaptive         # <--- ora dipende da SLICING.type
+            )
+        elif self.slicing_type == "adaptive_abmof":
+            print("[VisionNodeEventsPlayback] Using ABMOF adaptive slicer.")
+            self.adaptiveSlicer = AdaptiveSlicerABMOF(self.config)
+
+        # fps per LK, se adaptive lo calcoliamo dinamicamente
+        if self.slicing_type == "mvsec":
+            self.fps = 1000.0 / 10.0       # placeholder, aggiornato da mvsec iterator
+        elif self.slicing_type == "fixed":
             self.fps = 1000.0 / self.fixed_dt_ms
-        elif self.slicing_type == "adaptive":
+        elif self.slicing_type == "adaptive_pid" or self.slicing_type == "adaptive_abmof":
             self.fps = 1000.0 / self.adaptiveSlicer.initial_dt_ms
 
         self.deltaTms = 1000.0 / self.fps
@@ -305,10 +317,11 @@ class VisionNodeUZHFPVEventsPlayback:
     # RUN
     # --------------------------------------------------------
     def run(self):
-        if self.slicing_type in ["fixed", "adaptive"]:
+        if self.slicing_type in ["fixed", "adaptive_pid"]:
             self._run_slicing()
 
-            # self.plot_flow_components()
+        elif self.slicing_type == "adaptive_abmof":
+            self._run_adaptive_abmof()
 
         else:
             raise ValueError(f"Unknown slicing type: {self.slicing_type}")
@@ -337,6 +350,42 @@ class VisionNodeUZHFPVEventsPlayback:
             new_dt, updated = self.adaptiveSlicer.update(self.filteredFlowVectors)
             if updated:
                 print(f"[Adaptive PID] dt_\ms updated → {new_dt:.2f}")
+
+    def _run_adaptive_abmof(self):
+        iterator = fpv_evs_iterator_adaptive_abmof(
+            scenedir=self.events_dir,
+            adaptive_slicer=self.adaptiveSlicer,
+            H=self.H,
+            W=self.W,
+            rectify=self.rectify,
+            use_valid_frame_range=self.use_valid_frame_range
+        )
+
+        for (
+            event_frame,
+            t0_us,
+            dt_ms,
+            cam_imu_slice,
+            gt_state_slice,
+            in_valid_range
+        ) in iterator:
+
+            self.deltaTms = dt_ms
+
+            self._processEventFrame(
+                event_frame,
+                t0_us,
+                cam_imu_slice,
+                gt_state_slice
+            )
+
+            if in_valid_range:
+                updated = self.adaptiveSlicer.feedback(self.filteredFlowVectors)
+                if updated:
+                    print(f"[ABMOF-FPV] areaEventThr → {self.adaptiveSlicer.areaEventThr}")
+
+            self.frameID += 1
+
 
     # --------------------------------------------------------
     # CORE PROCESSING
